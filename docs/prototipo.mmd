@@ -1,0 +1,33 @@
+flowchart LR
+    CLI["Navegador / cliente HTTP<br/>sistemas externos"]
+
+    subgraph RED["Red Docker «plataforma» (un contenedor por servicio)"]
+        GWY["api_gateway :8080<br/>autenticación · RBAC<br/>límite de tasa · validación"]
+        ORQ["orchestrator :8081<br/>guardrails · PII · idempotencia<br/>aprobaciones · circuit breaker · LLM"]
+        TOOL["tool_service :8082<br/>RAG · reportes · CRM<br/>fallos simulados"]
+        COLA["queue_service :8083<br/>cola FIFO + DLQ"]
+        WRK["worker :8085<br/>consumo · reintentos<br/>backoff exponencial"]
+        AUD["audit_service :8084<br/>consulta de bitácora"]
+    end
+
+    VOL[("volumen «datos»<br/>state.json · audit.jsonl<br/>conocimiento.json")]
+    LLM["LLM externo opcional<br/>Claude (API / Bedrock)"]
+
+    CLI -->|"HTTP/JSON + Bearer<br/>Idempotency-Key"| GWY
+    GWY -->|REST| ORQ
+    GWY -->|REST| AUD
+    GWY -->|reintentar DLQ| COLA
+    ORQ -->|"REST (timeout 1,5 s)"| TOOL
+    ORQ -->|encola tarea| COLA
+    WRK -->|"sondeo /queue/next"| COLA
+    WRK -->|"ejecutar · timeout 5 s"| ORQ
+    WRK -->|"agotados → DLQ"| COLA
+    ORQ -.->|HTTPS opcional| LLM
+    ORQ --- VOL
+    AUD --- VOL
+    TOOL --- VOL
+
+    classDef svc fill:#e8f0fe,stroke:#3b5bdb,color:#1c2430
+    classDef ext fill:#fff4e0,stroke:#e67700,color:#1c2430
+    class GWY,ORQ,TOOL,COLA,WRK,AUD svc
+    class CLI,LLM ext

@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    actor U as Usuario
+    participant G as api_gateway
+    participant O as orchestrator
+    participant T as tool_service
+    participant L as LLM
+    U->>G: POST /v1/chat (Bearer, Idempotency-Key)
+    G->>G: valida token, rol, tasa y longitud
+    G->>O: POST /conversaciones/mensaje
+    O->>O: candado por clave · enmascara PII · guardrails
+    alt acción crítica
+        O-->>G: 202 APROBACION_PENDIENTE (id_aprobacion)
+    else consulta normal
+        O->>T: POST /tools/invocar consultar_conocimiento
+        T-->>O: documentos relevantes
+        O->>L: pregunta + documentos
+        L-->>O: respuesta
+        O->>O: guarda conversación y auditoría
+        O-->>G: 200 respuesta + documentos
+    end
+    G-->>U: respuesta JSON + X-Request-Id

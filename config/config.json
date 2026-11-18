@@ -1,0 +1,49 @@
+{
+  "entorno": "demo-local",
+  "services": {
+    "api_gateway":  { "host": "127.0.0.1", "port": 8080 },
+    "orchestrator": { "host": "127.0.0.1", "port": 8081 },
+    "tool_service": { "host": "127.0.0.1", "port": 8082 },
+    "queue_service":{ "host": "127.0.0.1", "port": 8083 },
+    "audit_service":{ "host": "127.0.0.1", "port": 8084 },
+    "worker":       { "host": "127.0.0.1", "port": 8085 }
+  },
+  "tokens": {
+    "demo-usuario-token":    { "sub": "u-1001", "role": "USUARIO_FINAL" },
+    "demo-admin-token":      { "sub": "u-9001", "role": "ADMINISTRADOR" },
+    "demo-aprobador-token":  { "sub": "u-9002", "role": "APROBADOR" },
+    "demo-sistema-token":    { "sub": "svc-crm",  "role": "SISTEMA_EXTERNO" },
+    "demo-auditor-token":    { "sub": "u-9003", "role": "AUDITOR" },
+    "demo-carga-token":      { "sub": "u-carga", "role": "USUARIO_FINAL" },
+    "demo-carga-sistema-token": { "sub": "svc-carga", "role": "SISTEMA_EXTERNO" },
+    "demo-rend-1-token":     { "sub": "u-rend-1", "role": "USUARIO_FINAL" },
+    "demo-rend-2-token":     { "sub": "u-rend-2", "role": "USUARIO_FINAL" },
+    "demo-rend-3-token":     { "sub": "u-rend-3", "role": "USUARIO_FINAL" },
+    "demo-rend-4-token":     { "sub": "u-rend-4", "role": "USUARIO_FINAL" },
+    "demo-rend-5-token":     { "sub": "u-rend-5", "role": "USUARIO_FINAL" },
+    "demo-limite-token":     { "sub": "u-limite", "role": "USUARIO_FINAL" }
+  },
+  "seguridad": {
+    "max_longitud_mensaje": 2000,
+    "rate_limit_por_minuto": 120,
+    "p95_objetivo_ms": 500
+  },
+  "timeouts_segundos": {
+    "gateway_a_servicios": 30,
+    "orquestador_a_herramientas": 1.5,
+    "worker_a_orquestador": 5
+  },
+  "retry": {
+    "max_intentos": 3,
+    "backoff_base_segundos": 0.05,
+    "circuit_breaker": { "umbral_fallos": 3, "tiempo_apertura_segundos": 1.0 }
+  },
+  "guardrails": {
+    "acciones_criticas": [
+      "eliminar registro",
+      "transferir datos",
+      "enviar correo masivo"
+    ],
+    "patrones_pii": ["(@[\\w.-]+\\.[a-zA-Z]{2,})", "(\\b\\d{10}\\b)"]
+  }
+}

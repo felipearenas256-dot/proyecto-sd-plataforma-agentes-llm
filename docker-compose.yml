@@ -1,0 +1,75 @@
+# Despliegue del prototipo como seis contenedores en una red privada.
+# Solo el API Gateway (8080) se publica hacia el equipo anfitrión; el resto
+# de servicios solo es alcanzable dentro de la red "plataforma".
+x-servicio: &servicio
+  build:
+    context: .
+    args:
+      INSTALAR_ANTHROPIC: ${INSTALAR_ANTHROPIC:-0}
+  image: plataforma-agentes-llm:1.0
+  restart: unless-stopped
+  networks: [plataforma]
+  volumes:
+    - datos:/app/data          # estado y bitácora compartidos (simula S3/Aurora)
+  environment: &entorno
+    API_GATEWAY_HOST: api_gateway
+    ORCHESTRATOR_HOST: orchestrator
+    TOOL_SERVICE_HOST: tool_service
+    QUEUE_SERVICE_HOST: queue_service
+    AUDIT_SERVICE_HOST: audit_service
+    WORKER_HOST: worker
+    LLM_PROVIDER: ${LLM_PROVIDER:-simulado}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    LLM_MODEL: ${LLM_MODEL:-}
+    AWS_REGION: ${AWS_REGION:-us-east-1}
+  healthcheck:
+    test: ["CMD", "python", "-c", "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ['PUERTO']+'/health',timeout=2).status==200 else 1)"]
+    interval: 5s
+    timeout: 3s
+    retries: 5
+
+services:
+  queue_service:
+    <<: *servicio
+    command: ["python", "src/queue_service.py"]
+    environment: { <<: *entorno, PUERTO: "8083" }
+
+  tool_service:
+    <<: *servicio
+    command: ["python", "src/tool_service.py"]
+    environment: { <<: *entorno, PUERTO: "8082" }
+
+  audit_service:
+    <<: *servicio
+    command: ["python", "src/audit_service.py"]
+    environment: { <<: *entorno, PUERTO: "8084" }
+
+  orchestrator:
+    <<: *servicio
+    command: ["python", "src/orchestrator.py"]
+    environment: { <<: *entorno, PUERTO: "8081" }
+    depends_on:
+      tool_service: { condition: service_healthy }
+      queue_service: { condition: service_healthy }
+      audit_service: { condition: service_healthy }
+
+  worker:
+    <<: *servicio
+    command: ["python", "src/worker.py"]
+    environment: { <<: *entorno, PUERTO: "8085", WORKER_POLL: "1" }
+    depends_on:
+      orchestrator: { condition: service_healthy }
+
+  api_gateway:
+    <<: *servicio
+    command: ["python", "src/api_gateway.py"]
+    environment: { <<: *entorno, PUERTO: "8080" }
+    ports: ["8080:8080"]
+    depends_on:
+      orchestrator: { condition: service_healthy }
+
+networks:
+  plataforma:
+
+volumes:
+  datos:

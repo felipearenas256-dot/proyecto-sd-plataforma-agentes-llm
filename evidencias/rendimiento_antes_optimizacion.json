@@ -1,0 +1,17 @@
+{
+  "solicitudes": 250,
+  "concurrencia": 25,
+  "errores": 0,
+  "duracion_s": 3.604,
+  "throughput_rps": 69.4,
+  "latencia_ms": {
+    "min": 25.5,
+    "media": 339.1,
+    "p50": 402.4,
+    "p95": 576.5,
+    "p99": 750.2,
+    "max": 763.5
+  },
+  "p95_objetivo_ms": 500,
+  "cumple_rnf09": false
+}

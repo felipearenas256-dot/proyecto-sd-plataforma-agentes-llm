@@ -1,0 +1,20 @@
+flowchart LR
+    U(Usuario final) --- C1(Iniciar conversación)
+    U --- C2(Consultar estado de tarea)
+    U --- C3(Consultar base de conocimiento)
+    S(Sistema externo) --- C4(Disparar tarea asíncrona)
+    S --- C2
+    A(Aprobador humano) --- C5(Aprobar o rechazar acción crítica)
+    AD(Administrador) --- C6(Configurar políticas de Guardrails)
+    AD --- C7(Gestionar identidades y credenciales)
+    AD --- C8(Reintentar tarea fallida / DLQ)
+    AU(Auditor de seguridad) --- C9(Consultar bitácora de auditoría)
+
+    C1 -->|include| C3
+    C1 -->|include| C2
+    C1 --> C10(Evaluar acción contra Guardrails)
+    C10 -->|extend: acción crítica| C5
+    C10 --> C11(Invocar herramienta)
+    C4 --> C2
+    C4 --> C11
+    C11 --> C10

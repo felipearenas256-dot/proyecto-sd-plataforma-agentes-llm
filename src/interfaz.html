@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consola de la plataforma de agentes</title>
+<style>
+:root{--fondo:#f6f7f9;--panel:#fff;--borde:#dde1e7;--texto:#1c2430;--suave:#5b6675;--acento:#1f4fd1;--ok:#137a45;--alerta:#b54708;--error:#b42318}
+*{box-sizing:border-box}
+body{margin:0;background:var(--fondo);color:var(--texto);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#141b26;color:#fff;padding:14px 20px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}
+header h1{font-size:17px;margin:0;font-weight:600}
+header small{color:#a9b4c4}
+.salud{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:12px;padding:3px 8px;border-radius:999px;background:#263142;color:#cfd8e3}
+.chip.ok{background:#12452c;color:#b8f0cf}.chip.caido{background:#5c1a14;color:#ffc9c2}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px}
+section{background:var(--panel);border:1px solid var(--borde);border-radius:10px;padding:16px}
+h2{font-size:15px;margin:0 0 4px}
+p.ayuda{margin:0 0 10px;color:var(--suave);font-size:13px}
+label{display:block;font-size:12px;color:var(--suave);margin-top:8px}
+input,textarea,select{width:100%;padding:8px 10px;border:1px solid var(--borde);border-radius:6px;font:inherit;background:#fff}
+button{margin-top:10px;padding:8px 14px;border:0;border-radius:6px;background:var(--acento);color:#fff;font:inherit;cursor:pointer}
+button.sec{background:#e8ecf3;color:var(--texto)}
+.fila{display:flex;gap:8px;flex-wrap:wrap}.fila button{flex:1}
+.resp{margin-top:12px;padding:10px 12px;border-radius:6px;background:#f1f4f9;font-size:13px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
+.estado{display:inline-block;font-size:12px;font-weight:600;padding:2px 8px;border-radius:4px;margin-bottom:6px}
+.e200,.e201,.e202{background:#dcf5e7;color:var(--ok)}.e4{background:#fdecd8;color:var(--alerta)}.e5,.e0{background:#fde3e1;color:var(--error)}
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:10px}
+th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--borde)}
+th{color:var(--suave);font-weight:600}
+.ancho{grid-column:1/-1}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Plataforma distribuida de agentes LLM</h1><small>Prototipo académico · Sistemas Distribuidos</small></div>
+  <div class="salud" id="salud"></div>
+</header>
+<main>
+  <section>
+    <h2>1. Conversación con el agente</h2>
+    <p class="ayuda">Gateway → orquestador → herramienta RAG → LLM. Pruebe "eliminar registro" para disparar la aprobación humana.</p>
+    <label for="tkChat">Token (rol)</label>
+    <select id="tkChat"><option value="demo-usuario-token">demo-usuario-token · USUARIO_FINAL</option><option value="demo-auditor-token">demo-auditor-token · AUDITOR (debe dar 403)</option><option value="token-falso">token-falso (debe dar 401)</option></select>
+    <label for="msg">Mensaje</label>
+    <textarea id="msg" rows="3">¿Cómo se reprocesa la DLQ?</textarea>
+    <button onclick="chat()">Enviar mensaje</button>
+    <div id="outChat"></div>
+  </section>
+  <section>
+    <h2>2. Tarea asíncrona</h2>
+    <p class="ayuda">Un sistema externo publica un evento; la cola lo desacopla y el worker lo procesa con reintentos.</p>
+    <label for="fallas">Fallos simulados en la herramienta</label>
+    <select id="fallas"><option value="0">0 · éxito al primer intento</option><option value="2">2 · éxito tras 2 reintentos</option><option value="10">10 · agota reintentos → DLQ</option></select>
+    <div class="fila"><button onclick="tarea()">Crear tarea</button><button class="sec" onclick="verTarea()">Consultar estado</button></div>
+    <button class="sec" onclick="dlq()" style="width:100%">Reintentar desde la DLQ (administrador)</button>
+    <div id="outTarea"></div>
+  </section>
+  <section>
+    <h2>3. Aprobación humana</h2>
+    <p class="ayuda">Las acciones críticas quedan en espera hasta que un aprobador decide.</p>
+    <label for="apr">Id de aprobación</label>
+    <input id="apr" placeholder="apr-…">
+    <div class="fila"><button onclick="decidir('APROBAR')">Aprobar</button><button class="sec" onclick="decidir('RECHAZAR')">Rechazar</button></div>
+    <div id="outApr"></div>
+  </section>
+  <section class="ancho">
+    <h2>4. Bitácora de auditoría (rol AUDITOR)</h2>
+    <p class="ayuda">Registro append-only; los datos personales aparecen enmascarados.</p>
+    <button onclick="auditoria()">Actualizar bitácora</button>
+    <div id="outAud"></div>
+  </section>
+</main>
+<script>
+let ultimaTarea = null;
+const $ = (id) => document.getElementById(id);
+function uuid(){return (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());}
+async function api(metodo, ruta, token, cuerpo, clave){
+  const h = {'Content-Type':'application/json','Authorization':'Bearer ' + token};
+  if (clave) h['Idempotency-Key'] = clave;
+  try {
+    const r = await fetch(ruta, {method:metodo, headers:h, body: cuerpo ? JSON.stringify(cuerpo) : undefined});
+    return [r.status, await r.json()];
+  } catch (e) { return [0, {error: String(e)}]; }
+}
+function pintar(id, status, datos, resumen){
+  const clase = 'e' + (String(status)[0] === '2' ? status : String(status)[0]);
+  const div = document.createElement('div'); div.className = 'resp';
+  const et = document.createElement('span'); et.className = 'estado ' + clase; et.textContent = 'HTTP ' + status;
+  div.appendChild(et); div.appendChild(document.createElement('br'));
+  div.appendChild(document.createTextNode(resumen || JSON.stringify(datos, null, 2)));
+  $(id).replaceChildren(div);
+}
+async function chat(){
+  const [s, d] = await api('POST', '/v1/chat', $('tkChat').value, {mensaje: $('msg').value}, uuid());
+  if (d.id_aprobacion) $('apr').value = d.id_aprobacion;
+  const resumen = d.respuesta ? `${d.respuesta}\n\nProveedor LLM: ${d.proveedor_llm}\nDocumentos: ${(d.documentos||[]).map(x=>x.id + ' · ' + x.titulo).join('; ') || 'ninguno'}` : null;
+  pintar('outChat', s, d, resumen);
+}
+async function tarea(){
+  const [s, d] = await api('POST', '/v1/tareas', 'demo-sistema-token', {evento:'webhook.demo', payload:{registros:12, fallar_veces:Number($('fallas').value)}}, uuid());
+  if (d.id_tarea) ultimaTarea = d.id_tarea;
+  pintar('outTarea', s, d);
+  setTimeout(verTarea, 2500);
+}
+async function verTarea(){
+  if (!ultimaTarea) return;
+  const [s, d] = await api('GET', '/v1/tareas/' + ultimaTarea, 'demo-admin-token');
+  pintar('outTarea', s, d);
+}
+async function dlq(){
+  const [s, d] = await api('POST', '/v1/tareas/reintentar-dlq', 'demo-admin-token', {});
+  pintar('outTarea', s, d);
+  setTimeout(verTarea, 2500);
+}
+async function decidir(decision){
+  const [s, d] = await api('POST', `/v1/aprobaciones/${encodeURIComponent($('apr').value.trim())}/decidir`, 'demo-aprobador-token', {decision});
+  pintar('outApr', s, d);
+}
+async function auditoria(){
+  const [s, d] = await api('GET', '/v1/auditoria?limit=15', 'demo-auditor-token');
+  if (s !== 200) return pintar('outAud', s, d);
+  const tabla = document.createElement('table');
+  tabla.innerHTML = '<thead><tr><th>Hora (UTC)</th><th>Evento</th><th>Actor</th><th>Entidad</th><th>Resultado</th><th>Detalle</th></tr></thead>';
+  const cuerpo = document.createElement('tbody');
+  for (const e of d.eventos){
+    const tr = document.createElement('tr');
+    for (const v of [e.ts.slice(11,19), e.tipo, e.actor, e.entidad, e.resultado, JSON.stringify(e.detalle)]){
+      const td = document.createElement('td'); td.textContent = v; tr.appendChild(td);
+    }
+    cuerpo.appendChild(tr);
+  }
+  tabla.appendChild(cuerpo); $('outAud').replaceChildren(tabla);
+}
+async function salud(){
+  const [s, d] = await api('GET', '/v1/salud', 'demo-usuario-token');
+  const cont = $('salud'); cont.replaceChildren();
+  for (const [nombre, ok] of Object.entries(d.servicios || {})){
+    const c = document.createElement('span'); c.className = 'chip ' + (ok ? 'ok' : 'caido');
+    c.textContent = nombre + (ok ? ' ●' : ' ✕'); cont.appendChild(c);
+  }
+}
+salud(); setInterval(salud, 3000);
+</script>
+</body>
+</html>

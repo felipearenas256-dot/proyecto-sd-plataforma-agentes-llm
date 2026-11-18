@@ -1,0 +1,46 @@
+EVIDENCIAS DE PRUEBAS - Prototipo local de plataforma de agentes LLM
+Comando: python -m unittest discover -s tests -v
+Fecha: 17/11/2026 19:46 · Python 3.12.10 · Windows 11
+
+test_01_40_chat_simultaneos (test_concurrencia.PruebasConcurrencia.test_01_40_chat_simultaneos) ... ok
+test_02_20_tareas_simultaneas (test_concurrencia.PruebasConcurrencia.test_02_20_tareas_simultaneas) ... ok
+test_03_misma_clave_idempotencia_concurrente (test_concurrencia.PruebasConcurrencia.test_03_misma_clave_idempotencia_concurrente)
+20 reintentos simultáneos con la misma Idempotency-Key producen un solo efecto. ... ok
+test_01_chat_conversacional (test_funcionales.PruebasFuncionales.test_01_chat_conversacional) ... ok
+test_02_sin_token_devuelve_401 (test_funcionales.PruebasFuncionales.test_02_sin_token_devuelve_401) ... ok
+test_03_rol_sin_permiso_devuelve_403 (test_funcionales.PruebasFuncionales.test_03_rol_sin_permiso_devuelve_403) ... ok
+test_04_validacion_de_entrada (test_funcionales.PruebasFuncionales.test_04_validacion_de_entrada) ... ok
+test_05_idempotencia_en_chat (test_funcionales.PruebasFuncionales.test_05_idempotencia_en_chat) ... ok
+test_06_crear_y_consultar_tarea (test_funcionales.PruebasFuncionales.test_06_crear_y_consultar_tarea) ... ok
+test_07_aprobacion_humana (test_funcionales.PruebasFuncionales.test_07_aprobacion_humana) ... ok
+test_08_auditoria_solo_lectura_para_auditor (test_funcionales.PruebasFuncionales.test_08_auditoria_solo_lectura_para_auditor) ... ok
+test_09_limite_de_tasa_devuelve_429 (test_funcionales.PruebasFuncionales.test_09_limite_de_tasa_devuelve_429) ... ok
+test_10_respuesta_del_llm_y_rechazo_de_aprobacion (test_funcionales.PruebasFuncionales.test_10_respuesta_del_llm_y_rechazo_de_aprobacion) ... ok
+test_11_pii_enmascarada_en_auditoria (test_funcionales.PruebasFuncionales.test_11_pii_enmascarada_en_auditoria) ... ok
+test_01_health_de_todos_los_servicios (test_integracion.PruebasIntegracion.test_01_health_de_todos_los_servicios) ... ok
+test_02_flujo_asincrono_extremo_a_extremo (test_integracion.PruebasIntegracion.test_02_flujo_asincrono_extremo_a_extremo) ... ok
+test_03_recuperacion_aumentada_por_generacion (test_integracion.PruebasIntegracion.test_03_recuperacion_aumentada_por_generacion) ... ok
+test_04_cola_desacopla_productor_y_consumidor (test_integracion.PruebasIntegracion.test_04_cola_desacopla_productor_y_consumidor) ... ok
+test_01_latencia_y_throughput_del_chat (test_rendimiento.PruebasRendimiento.test_01_latencia_y_throughput_del_chat) ... ok
+test_01_reintentos_con_backoff (test_tolerancia_fallos.PruebasTolerancia.test_01_reintentos_con_backoff) ... ok
+test_02_agotar_reintentos_envia_a_dlq (test_tolerancia_fallos.PruebasTolerancia.test_02_agotar_reintentos_envia_a_dlq) ... ok
+test_03_recuperacion_desde_dlq (test_tolerancia_fallos.PruebasTolerancia.test_03_recuperacion_desde_dlq) ... ok
+test_04_idempotencia_ante_reintentos_de_red (test_tolerancia_fallos.PruebasTolerancia.test_04_idempotencia_ante_reintentos_de_red) ... ok
+test_05_circuit_breaker (test_tolerancia_fallos.PruebasTolerancia.test_05_circuit_breaker) ... ok
+test_06_caida_real_de_un_servicio_y_recuperacion (test_tolerancia_fallos.PruebasTolerancia.test_06_caida_real_de_un_servicio_y_recuperacion)
+Se mata el proceso tool_service y se observa aislamiento, DLQ y recuperación. ... ok
+
+----------------------------------------------------------------------
+Ran 25 tests in 30.958s
+
+OK
+
+[concurrencia] 40 solicitudes en 0.579s (69.1 req/s), 0 errores
+
+[concurrencia] 20 solicitudes con la misma clave -> 1 tarea y 1 conversación
+
+[rendimiento] 250 solicitudes, concurrencia 25: 254.9 req/s, p50=83.0 ms, p95=130.4 ms, p99=598.2 ms, errores=0
+
+[tolerancia] tarea completada tras 3 intentos (2 reintentos)
+
+[tolerancia] tool_service caído: chat 503, tarea en DLQ, breaker ABIERTO; tras reiniciarlo la tarea se completó y el breaker volvió a CERRADO

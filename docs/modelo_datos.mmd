@@ -1,0 +1,54 @@
+erDiagram
+    ROLES ||--o{ USUARIOS : "asigna"
+    USUARIOS ||--o{ CREDENCIALES : "posee"
+    USUARIOS ||--o{ SESIONES : "inicia"
+    SESIONES ||--o{ CONVERSACIONES : "agrupa"
+    CONVERSACIONES ||--o{ MENSAJES : "contiene"
+    AGENTES ||--o{ CONVERSACIONES : "atiende"
+    AGENTES ||--o{ INVOCACIONES_HERRAMIENTA : "genera"
+    HERRAMIENTAS ||--o{ INVOCACIONES_HERRAMIENTA : "ejecuta"
+    CONVERSACIONES |o--o{ INVOCACIONES_HERRAMIENTA : "opcional"
+    INVOCACIONES_HERRAMIENTA }o--|| POLITICAS_GUARDRAIL : "evaluada por"
+    INVOCACIONES_HERRAMIENTA |o--o| APROBACIONES_HUMANAS : "requiere"
+    EVENTOS_ENTRADA ||--|| TAREAS_ASINCRONAS : "origina"
+    TAREAS_ASINCRONAS ||--o{ INVOCACIONES_HERRAMIENTA : "orquesta"
+    DOCUMENTOS_CONOCIMIENTO }o--o{ AGENTES : "RAG"
+    REGISTROS_AUDITORIA }o..o{ INVOCACIONES_HERRAMIENTA : "traza"
+    REGISTROS_AUDITORIA }o..o{ APROBACIONES_HUMANAS : "traza"
+
+    USUARIOS {
+        uuid id_usuario PK
+        varchar nombre
+        varchar correo
+        uuid id_rol FK
+        varchar estado
+        timestamp creado_en
+    }
+    SESIONES {
+        uuid id_sesion PK
+        uuid id_usuario FK
+        timestamp iniciada_en
+    }
+    INVOCACIONES_HERRAMIENTA {
+        uuid id_invocacion PK
+        uuid id_agente FK
+        uuid id_herramienta FK
+        uuid id_conversacion FK
+        jsonb parametros
+        jsonb resultado
+        varchar estado
+    }
+    TAREAS_ASINCRONAS {
+        uuid id_tarea PK
+        uuid id_evento FK
+        varchar estado
+        int intentos
+        jsonb payload
+    }
+    REGISTROS_AUDITORIA {
+        uuid id_auditoria PK
+        varchar tipo_entidad
+        uuid entidad_ref
+        varchar actor
+        timestamp ts
+    }

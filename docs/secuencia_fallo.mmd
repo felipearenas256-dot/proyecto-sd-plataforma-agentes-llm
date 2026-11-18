@@ -1,0 +1,26 @@
+sequenceDiagram
+    autonumber
+    participant S as Sistema externo
+    participant G as api_gateway
+    participant O as orchestrator
+    participant Q as queue_service
+    participant W as worker
+    participant T as tool_service (caído)
+    S->>G: POST /v1/tareas
+    G->>O: crear tarea
+    O->>Q: encolar
+    O-->>S: 202 PENDIENTE
+    W->>Q: GET /queue/next
+    loop intentos 1..3 (espera 0,05 s · 0,10 s)
+        W->>O: ejecutar tarea
+        O-xT: invocar herramienta (sin respuesta, timeout)
+        O-->>W: 503 fallo transitorio
+    end
+    Note over O: tras 3 fallos el circuit breaker pasa a ABIERTO
+    W->>O: marcar FALLIDA
+    W->>Q: POST /queue/dlt (DLQ)
+    Note over T: el servicio se recupera
+    S->>G: POST /v1/tareas/reintentar-dlq (ADMINISTRADOR)
+    G->>Q: reintroducir tarea
+    W->>O: ejecutar (breaker SEMIABIERTO → CERRADO)
+    O-->>W: 200 COMPLETADA

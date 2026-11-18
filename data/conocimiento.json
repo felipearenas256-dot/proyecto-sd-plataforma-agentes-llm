@@ -1,0 +1,34 @@
+{
+  "documentos": [
+    {
+      "id": "doc-001",
+      "titulo": "Política de automatización de procesos",
+      "contenido": "La automatización de tareas conversacionales y asíncronas requiere gobernanza centralizada de permisos, trazabilidad y aprobación humana para acciones críticas."
+    },
+    {
+      "id": "doc-002",
+      "titulo": "Guía de integración de herramientas",
+      "contenido": "Las herramientas se registran en un catálogo y se exponen al agente mediante un gateway; cada invocación debe validarse contra políticas de contenido y seguridad."
+    },
+    {
+      "id": "doc-003",
+      "titulo": "Lineamientos de protección de datos",
+      "contenido": "Los datos personales deben cifrarse en tránsito y en reposo, minimizarse antes de registrarse en bitácoras y tratarse conforme a la Ley 1581 de 2012."
+    },
+    {
+      "id": "doc-004",
+      "titulo": "Procedimiento de reprocesamiento de la DLQ",
+      "contenido": "Cuando una tarea agota sus tres reintentos queda en la cola de mensajes fallidos (DLQ). El administrador revisa la causa, corrige los parámetros y reintroduce la tarea con POST /v1/tareas/reintentar-dlq."
+    },
+    {
+      "id": "doc-005",
+      "titulo": "Roles y permisos de la plataforma",
+      "contenido": "Existen cinco roles: usuario final, sistema externo, aprobador humano, administrador y auditor. Cada token se asocia a un único rol y el gateway rechaza con 403 las operaciones no permitidas."
+    },
+    {
+      "id": "doc-006",
+      "titulo": "Acuerdo de nivel de servicio del agente conversacional",
+      "contenido": "El tiempo de respuesta objetivo del chat es de 500 milisegundos en el percentil 95 para el entorno local, y la disponibilidad objetivo en producción es del 99,9 por ciento mensual."
+    }
+  ]
+}

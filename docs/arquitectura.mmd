@@ -1,0 +1,73 @@
+flowchart TB
+    subgraph CLIENTES["1 · Clientes"]
+        direction LR
+        UI["UI web / app<br/>conversacional"]
+        EXT["Sistemas externos<br/>webhooks · cron"]
+    end
+
+    subgraph BORDE["2 · Borde"]
+        direction LR
+        WAF["AWS WAF +<br/>CloudFront"]
+        APIGW["API Gateway<br/>REST · WebSocket"]
+        COGNITO["Amazon Cognito<br/>OAuth 2.0 · JWT"]
+        SQS["Amazon SQS<br/>cola + DLQ"]
+    end
+
+    subgraph NUCLEO["3 · Núcleo de orquestación (Bedrock AgentCore)"]
+        direction LR
+        RT["AgentCore<br/>Runtime"]
+        GR["Bedrock<br/>Guardrails"]
+        MEM["AgentCore<br/>Memory"]
+        GW["AgentCore<br/>Gateway"]
+        SF["Step Functions +<br/>aprobación humana"]
+    end
+
+    subgraph TOOLS["4 · Herramientas"]
+        direction LR
+        LAMBDA["AWS Lambda"]
+        FARGATE["Workers Fargate"]
+    end
+
+    subgraph DATOS["5 · Conocimiento y datos"]
+        direction LR
+        KB["Knowledge Bases +<br/>OpenSearch"]
+        DDB["DynamoDB<br/>sesiones · tareas"]
+        AURORA["Aurora PostgreSQL<br/>transaccional"]
+        S3["Amazon S3<br/>documentos · bitácora"]
+    end
+
+    subgraph SEG["6 · Seguridad y observabilidad (transversal)"]
+        direction LR
+        KMS["KMS +<br/>Secrets Manager"]
+        IAM["IAM ·<br/>AgentCore Identity"]
+        OBS["CloudWatch +<br/>X-Ray"]
+    end
+
+    UI -->|HTTPS / WSS| WAF --> APIGW
+    APIGW -.->|valida JWT| COGNITO
+    EXT -->|eventos| SQS
+    APIGW -->|REST síncrono| RT
+    SQS -->|consumo asíncrono| SF
+    RT --> GR
+    RT --> MEM
+    RT --> GW
+    GR -->|acción crítica| SF
+    GW --> LAMBDA
+    SF --> FARGATE
+    LAMBDA --> KB
+    FARGATE --> DDB
+    RT --> AURORA
+    KB --> S3
+
+    classDef c fill:#e8f0fe,stroke:#3b5bdb,color:#1c2430
+    classDef b fill:#eef2ff,stroke:#5c6ac4,color:#1c2430
+    classDef n fill:#e6f6ec,stroke:#2f9e44,color:#1c2430
+    classDef t fill:#fff4e0,stroke:#e67700,color:#1c2430
+    classDef d fill:#fdebf3,stroke:#c2255c,color:#1c2430
+    classDef s fill:#eef1f5,stroke:#5b6675,color:#1c2430
+    class UI,EXT c
+    class WAF,APIGW,COGNITO,SQS b
+    class RT,GR,MEM,GW,SF n
+    class LAMBDA,FARGATE t
+    class KB,DDB,AURORA,S3 d
+    class KMS,IAM,OBS s

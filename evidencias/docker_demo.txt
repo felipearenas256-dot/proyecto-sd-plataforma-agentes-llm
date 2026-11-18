@@ -1,0 +1,35 @@
+=== Demostración en contenedores (docker compose) ===
+SERVICE         STATUS                    PORTS
+api_gateway     Up 6 seconds (healthy)    0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp
+audit_service   Up 18 seconds (healthy)   
+orchestrator    Up 12 seconds (healthy)   
+queue_service   Up 18 seconds (healthy)   
+tool_service    Up 18 seconds (healthy)   
+worker          Up 6 seconds (healthy)
+
+1) Chat a través del API Gateway publicado en :8080
+   HTTP 200 · proveedor=simulado · documentos=['doc-004']
+   respuesta: Según la base de conocimiento (Procedimiento de reprocesamiento de la DLQ): Cuando una tarea agota sus tres reintentos queda en la cola de mensajes fallidos (DL...
+
+2) Tarea asíncrona: gateway -> orquestador -> cola -> worker (otro contenedor)
+   HTTP 202 · {'id_tarea': 'tsk-3f3f8e6e9471', 'estado': 'PENDIENTE'}
+   estado final: COMPLETADA · intentos=1 · resultado={'reporte_id': 'tsk-3f3f8e6e9471', 'registros_procesados': 30, 'estado': 'GENERADO'}
+
+3) Caída de un nodo: docker compose stop tool_service
+   chat con la herramienta caída -> HTTP 503 · No fue posible consultar la base de conocimiento
+   la cola sigue aceptando tareas -> HTTP 202 · {'id_tarea': 'tsk-05463f390631', 'estado': 'PENDIENTE'}
+   tras 3 reintentos con backoff: estado=FALLIDA (enviada a la DLQ)
+
+4) Recuperación: docker compose start tool_service + reproceso de la DLQ
+   reintentar-dlq -> HTTP 202 · {'id': 'tsk-05463f390631', 'estado': 'REINTENTADA'}
+   estado final: COMPLETADA · resultado={'reporte_id': 'tsk-05463f390631', 'registros_procesados': 7, 'estado': 'GENERADO'}
+
+5) Bitácora de auditoría (contenedor audit_service): 14 eventos
+   guardrail_evaluado: 2
+   herramienta_fallida: 1
+   mensaje_recibido: 2
+   respuesta_generada: 1
+   tarea_completada: 2
+   tarea_creada: 2
+   tarea_en_dlq: 1
+   tarea_reintentable: 3

@@ -1,0 +1,88 @@
+classDiagram
+    class Usuario {
+        +UUID id_usuario
+        +String nombre
+        +String correo
+        +Rol rol
+    }
+    class CredencialIdentidad {
+        +UUID id_credencial
+        +String proveedor
+        +String estado
+    }
+    class Sesion {
+        +UUID id_sesion
+        +DateTime iniciada_en
+    }
+    class Conversacion {
+        +UUID id_conversacion
+        +String estado
+    }
+    class Mensaje {
+        +UUID id_mensaje
+        +String rol
+        +String contenido
+    }
+    class AgenteOrquestador {
+        +UUID id_agente
+        +String modelo
+        +String version
+        +orchestrar() Respuesta
+    }
+    class Herramienta {
+        +UUID id_herramienta
+        +String nombre
+        +JSON esquema_entrada
+    }
+    class InvocacionHerramienta {
+        +UUID id_invocacion
+        +JSON parametros
+        +JSON resultado
+        +String estado
+    }
+    class PoliticaGuardrail {
+        +UUID id_politica
+        +JSON reglas
+        +String version
+    }
+    class AprobacionHumana {
+        +UUID id_aprobacion
+        +String decision
+        +DateTime decidida_en
+    }
+    class TareaAsincrona {
+        +UUID id_tarea
+        +String estado
+        +int intentos
+    }
+    class EventoEntrada {
+        +UUID id_evento
+        +String tipo
+        +JSON payload
+    }
+    class DocumentoConocimiento {
+        +UUID id_documento
+        +String titulo
+        +StringUri uri
+    }
+    class RegistroAuditoria {
+        +UUID id_auditoria
+        +String tipo
+        +DateTime ts
+        +String actor
+    }
+
+    Usuario "1" --> "0..*" Sesion
+    Sesion "1" --> "1..*" Conversacion
+    Conversacion "1" *-- "1..*" Mensaje
+    Usuario "1" --> "0..*" CredencialIdentidad
+    AgenteOrquestador "1" --> "0..*" Mensaje : procesa
+    AgenteOrquestador "1" --> "0..*" InvocacionHerramienta : genera
+    Herramienta "1" --> "0..*" InvocacionHerramienta
+    InvocacionHerramienta "0..*" --> "1" PoliticaGuardrail : evaluada por
+    InvocacionHerramienta "0..1" --> "0..1" AprobacionHumana
+    EventoEntrada "1" --> "1" TareaAsincrona
+    TareaAsincrona "1" --> "0..*" InvocacionHerramienta
+    AgenteOrquestador "1" --> "0..*" DocumentoConocimiento : RAG
+    RegistroAuditoria ..> InvocacionHerramienta : traza
+    RegistroAuditoria ..> AprobacionHumana : traza
