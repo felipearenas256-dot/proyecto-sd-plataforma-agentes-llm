@@ -255,6 +255,7 @@ Todas las rutas `/v1/*`, salvo `/v1/salud`, exigen `Authorization: Bearer <token
 |---|---|---|---|---|
 | GET | `/` | Interfaz web de demostración | Público | 200 |
 | GET | `/v1/salud` | Estado de los seis servicios | Público | 200 |
+| GET | `/v1/metricas` | Tareas en cola, DLQ, circuit breaker y totales | ADMINISTRADOR, AUDITOR | 200, 401, 403 |
 | POST | `/v1/chat` | Enviar mensaje al agente | USUARIO_FINAL, ADMINISTRADOR | 200, 202 (aprobación), 400, 401, 403, 429, 503 |
 | POST | `/v1/tareas` | Crear tarea asíncrona | SISTEMA_EXTERNO, ADMINISTRADOR, USUARIO_FINAL | 202, 401, 403 |
 | GET | `/v1/tareas/{id}` | Consultar estado de una tarea | USUARIO_FINAL, SISTEMA_EXTERNO, ADMINISTRADOR, AUDITOR | 200, 404 |
@@ -455,11 +456,13 @@ services:
 
 ### 10.4 Evidencias de las funcionalidades
 
-La interfaz web (`http://127.0.0.1:8080/`) reúne las cuatro funciones principales: conversación con el agente, tareas asíncronas con fallos simulados, aprobación humana y consulta de la bitácora. La cabecera muestra en vivo el estado de salud de los seis servicios.
+La interfaz web (`http://127.0.0.1:8080/`) es una consola de operación con un menú lateral y seis vistas: **Resumen** (indicadores, topología en vivo y actividad reciente), **Agente** (conversación con citas de las fuentes), **Tareas** (eventos asíncronos con el detalle de cada intento), **Aprobaciones** (acciones críticas en espera), **Servicios** (salud de cada contenedor) y **Bitácora**. Los indicadores de cola, DLQ y circuit breaker se obtienen de `GET /v1/metricas`, y el estado de los servicios de `GET /v1/salud`. El gateway calcula ese estado con un hilo de vigilancia por servicio, de modo que responde al instante aunque un contenedor esté caído.
 
-![Figura 6. Interfaz web tras recorrer el flujo completo: respuesta RAG, tarea completada tras dos reintentos, acción crítica aprobada y bitácora con los eventos.](docs/capturas/interfaz_flujo_completo.png)
+![Figura 6. Vista de resumen de la consola: seis servicios operativos, circuit breaker cerrado, topología y actividad reciente.](docs/capturas/interfaz_flujo_completo.png)
 
-![Figura 7. Interfaz con el contenedor tool_service detenido: el indicador de salud lo marca caído y el chat responde 503 controlado mientras los demás servicios siguen operando.](docs/capturas/interfaz_servicio_caido.png)
+![Figura 7. Vista del agente: respuestas con el documento citado, el código HTTP, la latencia y el proveedor del LLM.](docs/capturas/interfaz_agente.png)
+
+![Figura 8. Consola con el contenedor tool_service detenido: el nodo aparece caído, el circuit breaker abierto, dos tareas en la DLQ y el resto de la plataforma operativa.](docs/capturas/interfaz_servicio_caido.png)
 
 ## 11. Tolerancia a fallos y recuperación
 
@@ -487,7 +490,7 @@ Los fallos contemplados son: indisponibilidad temporal o total de una herramient
 
 Cuando la herramienta no responde, el orquestador agota su timeout de 1,5 s y devuelve un 503 controlado. El worker registra el evento `tarea_reintentable`, espera el backoff y vuelve a intentar. Tras tres fallos, el circuit breaker del orquestador pasa a ABIERTO y las llamadas siguientes se rechazan de inmediato, sin esperar el timeout. El worker marca la tarea como `FALLIDA`, la publica en la DLQ y registra `tarea_en_dlq`. Cuando el servicio se recupera, el administrador reintroduce la tarea. La primera llamada pasa con el breaker en SEMIABIERTO y, si tiene éxito, el breaker vuelve a CERRADO. Durante todo el episodio, el gateway, la cola, el worker y la auditoría siguen respondiendo: el fallo queda aislado.
 
-![Figura 8. Secuencia de fallo y recuperación de una tarea asíncrona.](docs/secuencia_fallo.png)
+![Figura 9. Secuencia de fallo y recuperación de una tarea asíncrona.](docs/secuencia_fallo.png)
 
 ## 12. Seguridad del sistema
 
@@ -532,7 +535,7 @@ Además de las pruebas automatizadas, `scripts/demo_docker.py` repite el escenar
 
 La ejecución de `python -m unittest discover -s tests -v` terminó con **25 pruebas correctas (OK) en 31 segundos**. La salida completa está en `evidencias/resultados_pruebas.txt`.
 
-![Figura 9. Salida de la ejecución de las 25 pruebas automatizadas.](docs/capturas/pruebas_unittest.png)
+![Figura 10. Salida de la ejecución de las 25 pruebas automatizadas.](docs/capturas/pruebas_unittest.png)
 
 Los hallazgos más relevantes son:
 
@@ -541,7 +544,7 @@ Los hallazgos más relevantes son:
 - **Seguridad.** Se verificaron las respuestas 401, 403, 400 y 429, el rechazo (409) de una segunda decisión sobre la misma aprobación, y que ningún correo ni número telefónico aparece en claro en la bitácora.
 - **Contenedores.** En Docker, el flujo completo funcionó entre contenedores. Con `tool_service` detenido, el chat respondió 503, la cola siguió aceptando tareas (202), la tarea terminó en la DLQ y, al reiniciar el contenedor, se reprocesó hasta COMPLETADA (`evidencias/docker_demo.txt`).
 
-![Figura 10. Demostración sobre los seis contenedores, con caída y recuperación de un nodo.](docs/capturas/demo_docker.png)
+![Figura 11. Demostración sobre los seis contenedores, con caída y recuperación de un nodo.](docs/capturas/demo_docker.png)
 
 ### 13.3 Rendimiento: medición, diagnóstico y optimización
 
@@ -557,7 +560,7 @@ La primera medición incumplió el requisito RNF-09. El diagnóstico mostró que
 | Errores | 0 | 0 | 0 |
 | Cumple RNF-09 | No | **Sí** | — |
 
-El p99 se mantiene alto porque unas pocas solicitudes coinciden con el volcado del estado a disco o con la planificación de hilos del sistema operativo. Este fenómeno de "cola larga" es típico de los sistemas distribuidos (Dean & Barroso, 2013). La mejora tiene un costo: ante una caída abrupta del orquestador pueden perderse hasta 100 ms de cambios de estado, un compromiso aceptable para un prototipo que en producción se resolvería con escrituras transaccionales en DynamoDB. Los valores varían entre ejecuciones: en dos corridas posteriores a la optimización, el p95 fue de 81 ms y de 130 ms; la tabla reporta la corrida más desfavorable. Las métricas exactas de cada corrida se guardan en `evidencias/rendimiento.json` y `evidencias/rendimiento_antes_optimizacion.json`.
+El p99 se mantiene alto porque unas pocas solicitudes coinciden con el volcado del estado a disco o con la planificación de hilos del sistema operativo. Este fenómeno de "cola larga" es típico de los sistemas distribuidos (Dean & Barroso, 2013). La mejora tiene un costo: ante una caída abrupta del orquestador pueden perderse hasta 100 ms de cambios de estado, un compromiso aceptable para un prototipo que en producción se resolvería con escrituras transaccionales en DynamoDB. Los valores varían entre ejecuciones en un mismo equipo de escritorio: en tres corridas posteriores a la optimización, el p95 fue de 81 ms, 130 ms y 248 ms. Las tres cumplen el requisito; la tabla reporta la corrida guardada en las evidencias. Las métricas exactas de cada corrida se guardan en `evidencias/rendimiento.json` y `evidencias/rendimiento_antes_optimizacion.json`.
 
 ### 13.4 Comparación con los requisitos
 
@@ -663,6 +666,7 @@ Las pruebas destaparon defectos reales de los sistemas distribuidos, que se corr
 3. **Cuello de botella de persistencia.** El p95 inicial de 576 ms incumplía el RNF-09; la persistencia diferida lo redujo a 130 ms (sección 13.3).
 4. **Timeouts mal escalonados en Docker.** Con un contenedor detenido, la resolución del nombre tardaba más que el timeout del gateway, y el error se reportaba en el borde y no en el orquestador. Se definieron timeouts decrecientes hacia el interior (30 s, 5 s y 1,5 s).
 5. **Búsqueda RAG poco efectiva.** La búsqueda inicial comparaba la pregunta completa como texto literal y casi nunca encontraba coincidencias. Se reemplazó por coincidencia de términos normalizados sin tildes y con raíces de seis letras.
+6. **Chequeo de salud lento con un nodo caído.** Con un contenedor detenido, la resolución DNS de su nombre tardaba de 3 a 4 segundos sin respetar el timeout HTTP, y el panel se congelaba. Se cambió a un hilo de vigilancia por servicio que guarda el último estado; `/v1/salud` pasó a responder en unos 3 ms.
 
 ### 15.3 Limitaciones
 
@@ -779,7 +783,7 @@ Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., & Cao, Y. (2023)
 
 ### Anexo K. Modelo de datos propuesto para producción
 
-![Figura 11. Modelo entidad-relación propuesto para Aurora PostgreSQL.](docs/modelo_datos.png)
+![Figura 12. Modelo entidad-relación propuesto para Aurora PostgreSQL.](docs/modelo_datos.png)
 
 Extracto del DDL propuesto:
 

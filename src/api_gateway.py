@@ -26,13 +26,33 @@ INDEX_HTML = (Path(__file__).resolve().parent / "interfaz.html").read_text(encod
 SERVICIOS_INTERNOS = ["orchestrator", "tool_service", "queue_service", "audit_service", "worker"]
 
 
+_SALUD: dict[str, bool] = {}
+_SALUD_LOCK = threading.Lock()
+
+
+def _vigilar(nombre: str) -> None:
+    """Un hilo por servicio consulta /health cada segundo y guarda el último resultado.
+
+    Así /v1/salud responde al instante aunque un contenedor caído tarde segundos en
+    fallar (la resolución DNS de un contenedor detenido no respeta el timeout HTTP).
+    """
+    while True:
+        ok = http_json("GET", service_url(nombre, "/health"), timeout=0.8)[0] == 200
+        with _SALUD_LOCK:
+            _SALUD[nombre] = ok
+        time.sleep(1.0)
+
+
 def _salud_global() -> dict:
-    """Consulta /health de todos los servicios en paralelo (para el panel de la interfaz)."""
-    def una(nombre: str) -> tuple[str, bool]:
+    with _SALUD_LOCK:
+        instantanea = dict(_SALUD)
+    if len(instantanea) == len(SERVICIOS_INTERNOS):
+        return {"api_gateway": True, **instantanea}
+
+    def una(nombre: str) -> tuple[str, bool]:      # primer uso: consulta directa
         return nombre, http_json("GET", service_url(nombre, "/health"), timeout=0.8)[0] == 200
     with ThreadPoolExecutor(max_workers=len(SERVICIOS_INTERNOS)) as pool:
-        estados = dict(pool.map(una, SERVICIOS_INTERNOS))
-    return {"api_gateway": True, **estados}
+        return {"api_gateway": True, **dict(pool.map(una, SERVICIOS_INTERNOS))}
 
 
 def _autorizar(handler: JSONHandler, roles_permitidos: set[str]) -> dict | None:
@@ -86,6 +106,17 @@ class Handler(JSONHandler):
             self.send_json(200, {"estado": "OK", "servicio": SERVICE_NAME})
         elif ruta == "/v1/salud":
             self.send_json(200, {"servicios": _salud_global()})
+        elif ruta == "/v1/metricas":
+            # Métricas de operación para el panel: cola, DLQ y circuit breaker.
+            claims = _autorizar(self, {"ADMINISTRADOR", "AUDITOR"})
+            if not claims:
+                return
+            s_cola, cola = _reenviar("GET", "queue_service", "/stats", {}, {})
+            s_orq, orq = _reenviar("GET", "orchestrator", "/interno/estado", {}, {})
+            self.send_json(200, {
+                "cola": cola if s_cola == 200 else None,
+                "orquestador": orq if s_orq == 200 else None,
+            })
         elif ruta.startswith("/v1/tareas/"):
             claims = _autorizar(self, {"USUARIO_FINAL", "SISTEMA_EXTERNO", "ADMINISTRADOR", "AUDITOR"})
             if not claims:
@@ -158,4 +189,6 @@ class Handler(JSONHandler):
 
 
 if __name__ == "__main__":
+    for _nombre in SERVICIOS_INTERNOS:
+        threading.Thread(target=_vigilar, args=(_nombre,), daemon=True).start()
     serve(SERVICE_NAME, Handler)
