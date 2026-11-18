@@ -173,7 +173,7 @@ Un agente LLM combina un modelo de lenguaje con herramientas externas: el modelo
 | Comunicación | HTTP/1.1 con JSON; REST síncrono; cola FIFO con DLQ |
 | Contenedores | Docker 24+ y Docker Compose v2; imagen `python:3.12-slim` |
 | LLM (opcional) | SDK `anthropic` para Claude vía API de Anthropic o Amazon Bedrock |
-| Pruebas | `unittest` (25 casos: funcionales, integración, concurrencia, rendimiento y tolerancia) |
+| Pruebas | `unittest` (26 casos: funcionales, integración, concurrencia, rendimiento y tolerancia) |
 | Documentación | Mermaid (diagramas), `python-docx` (informe), Pillow (capturas de consola) |
 | Infraestructura objetivo | AWS multi-AZ: API Gateway, Cognito, SQS, Lambda, Fargate, Bedrock AgentCore, DynamoDB, Aurora, OpenSearch, S3, KMS, CloudWatch |
 | Hardware mínimo (prototipo) | 2 núcleos, 4 GB de RAM (8 GB con Docker), 1 GB libre en disco |
@@ -256,6 +256,7 @@ Todas las rutas `/v1/*`, salvo `/v1/salud`, exigen `Authorization: Bearer <token
 | GET | `/` | Interfaz web de demostración | Público | 200 |
 | GET | `/v1/salud` | Estado de los seis servicios | Público | 200 |
 | GET | `/v1/metricas` | Tareas en cola, DLQ, circuit breaker y totales | ADMINISTRADOR, AUDITOR | 200, 401, 403 |
+| POST | `/v1/servicios/{nombre}/energia` | Apaga o enciende un servicio interno (`{"encendido": false}`) para inyectar fallos | ADMINISTRADOR | 200, 401, 403, 404 |
 | POST | `/v1/chat` | Enviar mensaje al agente | USUARIO_FINAL, ADMINISTRADOR | 200, 202 (aprobación), 400, 401, 403, 429, 503 |
 | POST | `/v1/tareas` | Crear tarea asíncrona | SISTEMA_EXTERNO, ADMINISTRADOR, USUARIO_FINAL | 202, 401, 403 |
 | GET | `/v1/tareas/{id}` | Consultar estado de una tarea | USUARIO_FINAL, SISTEMA_EXTERNO, ADMINISTRADOR, AUDITOR | 200, 404 |
@@ -318,7 +319,7 @@ El prototipo está escrito en Python 3.12 y usa solo la biblioteca estándar (`h
 | `src/tool_service.py` | Catálogo de herramientas y búsqueda RAG |
 | `src/queue_service.py` · `src/worker.py` | Cola con DLQ y consumidor con reintentos |
 | `src/audit_service.py` | Consulta de la bitácora |
-| `tests/` | 25 pruebas automatizadas en cinco archivos |
+| `tests/` | 26 pruebas automatizadas en cinco archivos |
 | `Dockerfile` · `docker-compose.yml` | Imagen y orquestación de los seis contenedores |
 | `config/config.json` | Puertos, tokens de demostración, límites y políticas |
 | `docs/` | Diagramas Mermaid (`.mmd`) y sus imágenes, capturas de pantalla |
@@ -456,13 +457,15 @@ services:
 
 ### 10.4 Evidencias de las funcionalidades
 
-La interfaz web (`http://127.0.0.1:8080/`) es una consola de operación con un menú lateral y seis vistas: **Resumen** (indicadores, topología en vivo y actividad reciente), **Agente** (conversación con citas de las fuentes), **Tareas** (eventos asíncronos con el detalle de cada intento), **Aprobaciones** (acciones críticas en espera), **Servicios** (salud de cada contenedor) y **Bitácora**. Los indicadores de cola, DLQ y circuit breaker se obtienen de `GET /v1/metricas`, y el estado de los servicios de `GET /v1/salud`. El gateway calcula ese estado con un hilo de vigilancia por servicio, de modo que responde al instante aunque un contenedor esté caído.
+La interfaz web (`http://127.0.0.1:8080/`) es una consola de operación con un menú lateral y seis vistas: **Resumen** (indicadores, topología en vivo y actividad reciente), **Agente** (conversación con citas de las fuentes), **Tareas** (eventos asíncronos con el detalle de cada intento), **Aprobaciones** (acciones críticas en espera), **Servicios** (salud de cada contenedor) y **Bitácora**. Los indicadores de cola, DLQ y circuit breaker se obtienen de `GET /v1/metricas`, y el estado de los servicios de `GET /v1/salud`. El gateway calcula ese estado con un hilo de vigilancia por servicio, de modo que responde al instante aunque un contenedor esté caído. En la vista Servicios, cada servicio interno tiene un interruptor de encendido: al apagarlo, el proceso sigue vivo pero responde 503 a todo, incluido `/health`, de modo que para el resto del sistema es indistinguible de una caída. Esto permite inyectar fallos desde la propia interfaz (por ejemplo, apagar `tool_service` abre el circuit breaker y apagar `worker` deja las tareas esperando en la cola) sin usar la terminal. Solo el rol administrador puede usarlo, cada cambio queda en la bitácora y el gateway no es apagable porque es la entrada al panel.
 
 ![Figura 6. Vista de resumen de la consola: seis servicios operativos, circuit breaker cerrado, topología y actividad reciente.](docs/capturas/interfaz_flujo_completo.png)
 
 ![Figura 7. Vista del agente: respuestas con el documento citado, el código HTTP, la latencia y el proveedor del LLM.](docs/capturas/interfaz_agente.png)
 
 ![Figura 8. Consola con el contenedor tool_service detenido: el nodo aparece caído, el circuit breaker abierto, dos tareas en la DLQ y el resto de la plataforma operativa.](docs/capturas/interfaz_servicio_caido.png)
+
+![Figura 9. Vista de servicios con el worker apagado desde su interruptor: el estado pasa a «Apagado», el menú y la cabecera lo señalan y el evento queda en la bitácora.](docs/capturas/interfaz_interruptores.png)
 
 ## 11. Tolerancia a fallos y recuperación
 
@@ -490,7 +493,7 @@ Los fallos contemplados son: indisponibilidad temporal o total de una herramient
 
 Cuando la herramienta no responde, el orquestador agota su timeout de 1,5 s y devuelve un 503 controlado. El worker registra el evento `tarea_reintentable`, espera el backoff y vuelve a intentar. Tras tres fallos, el circuit breaker del orquestador pasa a ABIERTO y las llamadas siguientes se rechazan de inmediato, sin esperar el timeout. El worker marca la tarea como `FALLIDA`, la publica en la DLQ y registra `tarea_en_dlq`. Cuando el servicio se recupera, el administrador reintroduce la tarea. La primera llamada pasa con el breaker en SEMIABIERTO y, si tiene éxito, el breaker vuelve a CERRADO. Durante todo el episodio, el gateway, la cola, el worker y la auditoría siguen respondiendo: el fallo queda aislado.
 
-![Figura 9. Secuencia de fallo y recuperación de una tarea asíncrona.](docs/secuencia_fallo.png)
+![Figura 10. Secuencia de fallo y recuperación de una tarea asíncrona.](docs/secuencia_fallo.png)
 
 ## 12. Seguridad del sistema
 
@@ -527,15 +530,15 @@ El diseño observa los principios de finalidad, libertad, seguridad, y acceso y 
 | Integración | `test_integracion.py` | 4 | Comunicación gateway → orquestador → cola → worker → herramienta y RAG | Flujo extremo a extremo sin errores |
 | Concurrencia | `test_concurrencia.py` | 3 | Solicitudes simultáneas y duplicadas | 0 errores; identificadores únicos; 1 efecto por clave |
 | Rendimiento | `test_rendimiento.py` | 1 | 250 solicitudes de chat con 25 clientes concurrentes | 0 errores y p95 ≤ 500 ms (RNF-09) |
-| Tolerancia a fallos | `test_tolerancia_fallos.py` | 6 | Reintentos, DLQ, recuperación, idempotencia, circuit breaker y caída real de un proceso | Aislamiento y recuperación correctos |
+| Tolerancia a fallos | `test_tolerancia_fallos.py` | 7 | Reintentos, DLQ, recuperación, idempotencia, circuit breaker, caída real de un proceso y apagado/encendido desde el panel | Aislamiento y recuperación correctos |
 
 Además de las pruebas automatizadas, `scripts/demo_docker.py` repite el escenario de caída sobre el despliegue en contenedores: detiene el contenedor `tool_service` con `docker compose stop` y lo vuelve a iniciar.
 
 ### 13.2 Resultados
 
-La ejecución de `python -m unittest discover -s tests -v` terminó con **25 pruebas correctas (OK) en 31 segundos**. La salida completa está en `evidencias/resultados_pruebas.txt`.
+La ejecución de `python -m unittest discover -s tests -v` terminó con **26 pruebas correctas (OK) en 33 segundos**. La salida completa está en `evidencias/resultados_pruebas.txt`.
 
-![Figura 10. Salida de la ejecución de las 25 pruebas automatizadas.](docs/capturas/pruebas_unittest.png)
+![Figura 11. Salida de la ejecución de las 26 pruebas automatizadas.](docs/capturas/pruebas_unittest.png)
 
 Los hallazgos más relevantes son:
 
@@ -544,23 +547,23 @@ Los hallazgos más relevantes son:
 - **Seguridad.** Se verificaron las respuestas 401, 403, 400 y 429, el rechazo (409) de una segunda decisión sobre la misma aprobación, y que ningún correo ni número telefónico aparece en claro en la bitácora.
 - **Contenedores.** En Docker, el flujo completo funcionó entre contenedores. Con `tool_service` detenido, el chat respondió 503, la cola siguió aceptando tareas (202), la tarea terminó en la DLQ y, al reiniciar el contenedor, se reprocesó hasta COMPLETADA (`evidencias/docker_demo.txt`).
 
-![Figura 11. Demostración sobre los seis contenedores, con caída y recuperación de un nodo.](docs/capturas/demo_docker.png)
+![Figura 12. Demostración sobre los seis contenedores, con caída y recuperación de un nodo.](docs/capturas/demo_docker.png)
 
 ### 13.3 Rendimiento: medición, diagnóstico y optimización
 
-La primera medición incumplió el requisito RNF-09. El diagnóstico mostró que el orquestador reescribía el archivo de estado completo dos veces por solicitud mientras sostenía el candado global, de modo que las solicitudes se serializaban y el costo crecía con el tamaño del estado. Al cambiar a persistencia diferida (fragmento 10.3 f), el p95 bajó de 576 ms a 130 ms y el throughput se multiplicó por 3,7:
+La primera medición incumplió el requisito RNF-09. El diagnóstico mostró que el orquestador reescribía el archivo de estado completo dos veces por solicitud mientras sostenía el candado global, de modo que las solicitudes se serializaban y el costo crecía con el tamaño del estado. Al cambiar a persistencia diferida (fragmento 10.3 f), el p95 bajó de 576 ms a 134 ms y el throughput se multiplicó por 3,4:
 
 | Métrica (250 solicitudes, 25 concurrentes) | Antes | Después | Requisito |
 |---|---:|---:|---:|
-| Throughput | 69,4 req/s | 254,9 req/s | — |
-| Latencia media | 339,1 ms | 95,0 ms | — |
-| p50 | 402,4 ms | 83,0 ms | — |
-| p95 | 576,5 ms | 130,4 ms | ≤ 500 ms |
-| p99 | 750,2 ms | 598,2 ms | — |
+| Throughput | 69,4 req/s | 236,8 req/s | — |
+| Latencia media | 339,1 ms | 98,3 ms | — |
+| p50 | 402,4 ms | 82,2 ms | — |
+| p95 | 576,5 ms | 133,8 ms | ≤ 500 ms |
+| p99 | 750,2 ms | 601,8 ms | — |
 | Errores | 0 | 0 | 0 |
 | Cumple RNF-09 | No | **Sí** | — |
 
-El p99 se mantiene alto porque unas pocas solicitudes coinciden con el volcado del estado a disco o con la planificación de hilos del sistema operativo. Este fenómeno de "cola larga" es típico de los sistemas distribuidos (Dean & Barroso, 2013). La mejora tiene un costo: ante una caída abrupta del orquestador pueden perderse hasta 100 ms de cambios de estado, un compromiso aceptable para un prototipo que en producción se resolvería con escrituras transaccionales en DynamoDB. Los valores varían entre ejecuciones en un mismo equipo de escritorio: en tres corridas posteriores a la optimización, el p95 fue de 81 ms, 130 ms y 248 ms. Las tres cumplen el requisito; la tabla reporta la corrida guardada en las evidencias. Las métricas exactas de cada corrida se guardan en `evidencias/rendimiento.json` y `evidencias/rendimiento_antes_optimizacion.json`.
+El p99 se mantiene alto porque unas pocas solicitudes coinciden con el volcado del estado a disco o con la planificación de hilos del sistema operativo. Este fenómeno de "cola larga" es típico de los sistemas distribuidos (Dean & Barroso, 2013). La mejora tiene un costo: ante una caída abrupta del orquestador pueden perderse hasta 100 ms de cambios de estado, un compromiso aceptable para un prototipo que en producción se resolvería con escrituras transaccionales en DynamoDB. Los valores varían entre ejecuciones en un mismo equipo de escritorio: en cuatro corridas posteriores a la optimización, el p95 fue de 81 ms, 130 ms, 134 ms y 248 ms. Todas cumplen el requisito; la tabla reporta la corrida guardada en las evidencias. Las métricas exactas de cada corrida se guardan en `evidencias/rendimiento.json` y `evidencias/rendimiento_antes_optimizacion.json`.
 
 ### 13.4 Comparación con los requisitos
 
@@ -581,7 +584,7 @@ El p99 se mantiene alto porque unas pocas solicitudes coinciden con el volcado d
 | RNF-06 | Cifrado TLS/KMS | Diseñado; no aplica al prototipo local |
 | RNF-07 | Evento de auditoría por acción | Cumplido (sin trazas distribuidas tipo X-Ray) |
 | RNF-08 | Herramientas en servicio separado | Cumplido |
-| RNF-09 | p95 = 130 ms ≤ 500 ms | Cumplido tras optimización |
+| RNF-09 | p95 = 134 ms ≤ 500 ms | Cumplido tras optimización |
 | RNF-10 | PII enmascarada (funcionales 11) | Cumplido en lo técnico |
 
 ## 14. Despliegue y ejecución
@@ -655,7 +658,7 @@ python scripts/run_all.py --stop
 
 ### 15.1 Logros
 
-Se completó el ciclo exigido por la guía: levantamiento de 12 requisitos funcionales y 10 no funcionales verificables, arquitectura de referencia sobre AWS, siete diagramas (arquitectura de referencia, arquitectura del prototipo, casos de uso, clases, modelo de datos y dos de secuencia), y un prototipo de seis servicios que se ejecuta tanto en procesos locales como en contenedores. Además, 25 pruebas automatizadas cubren las cinco categorías recomendadas. El prototipo demuestra los conceptos centrales de la asignatura con evidencias reproducibles: comunicación síncrona y asíncrona, concurrencia con sincronización, tolerancia a fallos con aislamiento real de un nodo caído, seguridad en el borde y despliegue en contenedores.
+Se completó el ciclo exigido por la guía: levantamiento de 12 requisitos funcionales y 10 no funcionales verificables, arquitectura de referencia sobre AWS, siete diagramas (arquitectura de referencia, arquitectura del prototipo, casos de uso, clases, modelo de datos y dos de secuencia), y un prototipo de seis servicios que se ejecuta tanto en procesos locales como en contenedores. Además, 26 pruebas automatizadas cubren las cinco categorías recomendadas. El prototipo demuestra los conceptos centrales de la asignatura con evidencias reproducibles: comunicación síncrona y asíncrona, concurrencia con sincronización, tolerancia a fallos con aislamiento real de un nodo caído, seguridad en el borde y despliegue en contenedores.
 
 ### 15.2 Dificultades encontradas
 
@@ -663,7 +666,7 @@ Las pruebas destaparon defectos reales de los sistemas distribuidos, que se corr
 
 1. **Condición de carrera en la idempotencia.** La verificación "¿existe ya esta clave?" y la creación se hacían en dos secciones críticas separadas. Veinte reintentos simultáneos con la misma clave crearon 7 tareas y 16 conversaciones. Se corrigió con un candado por clave, y la prueba `test_03_misma_clave_idempotencia_concurrente` evita que vuelva a ocurrir.
 2. **Bitácora corrompida bajo carga.** Varios hilos escribían en `audit.jsonl` a la vez y las líneas se intercalaban, de modo que la consulta del auditor fallaba. Se añadió un candado de escritura y una lectura tolerante a líneas incompletas.
-3. **Cuello de botella de persistencia.** El p95 inicial de 576 ms incumplía el RNF-09; la persistencia diferida lo redujo a 130 ms (sección 13.3).
+3. **Cuello de botella de persistencia.** El p95 inicial de 576 ms incumplía el RNF-09; la persistencia diferida lo redujo a 134 ms (sección 13.3).
 4. **Timeouts mal escalonados en Docker.** Con un contenedor detenido, la resolución del nombre tardaba más que el timeout del gateway, y el error se reportaba en el borde y no en el orquestador. Se definieron timeouts decrecientes hacia el interior (30 s, 5 s y 1,5 s).
 5. **Búsqueda RAG poco efectiva.** La búsqueda inicial comparaba la pregunta completa como texto literal y casi nunca encontraba coincidencias. Se reemplazó por coincidencia de términos normalizados sin tildes y con raíces de seis letras.
 6. **Chequeo de salud lento con un nodo caído.** Con un contenedor detenido, la resolución DNS de su nombre tardaba de 3 a 4 segundos sin respetar el timeout HTTP, y el panel se congelaba. Se cambió a un hilo de vigilancia por servicio que guarda el último estado; `/v1/salud` pasó a responder en unos 3 ms.
@@ -725,7 +728,7 @@ En producción, el costo dominante es el consumo de tokens del LLM, que crece co
 2. La separación en servicios autónomos aisló los fallos en la práctica, no solo en el papel. Al matar el proceso o detener el contenedor de herramientas, los otros cinco servicios siguieron respondiendo, las tareas se conservaron en la cola y la DLQ, y el sistema se recuperó sin intervención sobre los demás componentes.
 3. Los mecanismos de tolerancia a fallos se complementan entre sí: los timeouts detectan el fallo, los reintentos absorben los transitorios, el circuit breaker evita insistir sobre una dependencia caída, la DLQ conserva lo que no pudo procesarse y la idempotencia hace seguros los reintentos.
 4. La concurrencia fue la fuente principal de defectos. Las dos condiciones de carrera encontradas solo aparecieron bajo carga paralela, lo que confirma que las pruebas de concurrencia son indispensables en un sistema distribuido y que la idempotencia debe garantizarse de forma atómica.
-5. Medir antes de optimizar fue decisivo: la prueba de rendimiento detectó el incumplimiento de RNF-09, el diagnóstico encontró la causa y la corrección mejoró el throughput 3,7 veces, con un compromiso explícito entre latencia y durabilidad.
+5. Medir antes de optimizar fue decisivo: la prueba de rendimiento detectó el incumplimiento de RNF-09, el diagnóstico encontró la causa y la corrección mejoró el throughput 3,4 veces, con un compromiso explícito entre latencia y durabilidad.
 6. La principal limitación es que el prototipo no reemplaza los servicios administrados: la cola en memoria, los tokens estáticos y el estado en un volumen local deben sustituirse por SQS, Cognito y DynamoDB. Como trabajo futuro se propone desplegar la arquitectura en AWS con IaC, incorporar trazas distribuidas con OpenTelemetry, validar el LLM real con pruebas de carga y formalizar la política de tratamiento de datos personales.
 
 ## 18. Referencias bibliográficas
@@ -774,7 +777,7 @@ Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., & Cao, Y. (2023)
 | B | `docs/arquitectura.png` · `docs/prototipo.png` (+ fuentes `.mmd`) | Diagramas de arquitectura de referencia y del prototipo |
 | C | `docs/casos_uso.png` · `docs/clases.png` · `docs/modelo_datos.png` · `docs/secuencia_*.png` | Diagramas UML, modelo de datos y secuencias |
 | D | `MANUAL_INSTALACION.md` | Manual de instalación y ejecución |
-| E | `evidencias/resultados_pruebas.txt` | Salida completa de las 25 pruebas |
+| E | `evidencias/resultados_pruebas.txt` | Salida completa de las 26 pruebas |
 | F | `evidencias/rendimiento.json` · `evidencias/rendimiento_antes_optimizacion.json` | Métricas de rendimiento antes y después de la optimización |
 | G | `evidencias/docker_demo.txt` · `docs/capturas/` | Demostración en contenedores y capturas de pantalla |
 | H | `Dockerfile` · `docker-compose.yml` · `config/config.json` | Archivos de configuración del despliegue |
@@ -783,7 +786,7 @@ Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., & Cao, Y. (2023)
 
 ### Anexo K. Modelo de datos propuesto para producción
 
-![Figura 12. Modelo entidad-relación propuesto para Aurora PostgreSQL.](docs/modelo_datos.png)
+![Figura 13. Modelo entidad-relación propuesto para Aurora PostgreSQL.](docs/modelo_datos.png)
 
 Extracto del DDL propuesto:
 

@@ -121,5 +121,32 @@ class PruebasTolerancia(unittest.TestCase):
         print("\n[tolerancia] tool_service caído: chat 503, tarea en DLQ, breaker ABIERTO; "
               "tras reiniciarlo la tarea se completó y el breaker volvió a CERRADO")
 
+    def test_07_apagar_y_encender_servicio_desde_el_panel(self):
+        """El interruptor del panel apaga un servicio (503) sin matar el proceso y lo vuelve a encender."""
+        energia = lambda nombre, on, token="demo-admin-token": post(  # noqa: E731
+            f"/v1/servicios/{nombre}/energia", {"encendido": on}, token=token)
+        # Solo el administrador puede usarlo y el gateway no es apagable.
+        self.assertEqual(energia("worker", False, token="demo-auditor-token")[0], 403)
+        self.assertEqual(energia("api_gateway", False)[0], 404)
+        status, cuerpo = energia("tool_service", False)
+        try:
+            self.assertEqual((status, cuerpo["encendido"]), (200, False))
+            self.assertEqual(http_json("GET", service_url("tool_service", "/health"))[0], 503)
+            _, salud = get("/v1/salud")
+            self.assertFalse(salud["servicios"]["tool_service"])
+            self.assertIn("tool_service", salud["apagados"])
+            status, _ = post("/v1/chat", {"mensaje": "política de automatización"}, key="tol-apagado-chat")
+            self.assertEqual(status, 503)
+        finally:
+            self.assertEqual(energia("tool_service", True)[0], 200)
+        self.assertEqual(http_json("GET", service_url("tool_service", "/health"))[0], 200)
+        _, salud = get("/v1/salud")
+        self.assertNotIn("tool_service", salud["apagados"])
+        status, _ = post("/v1/chat", {"mensaje": "política de automatización"}, key="tol-encendido-chat")
+        self.assertEqual(status, 200)
+        tipos = [e["tipo"] for e in get("/v1/auditoria?limit=20", token="demo-auditor-token")[1]["eventos"]]
+        self.assertIn("servicio_apagado", tipos)
+        self.assertIn("servicio_encendido", tipos)
+
 if __name__ == "__main__":
     unittest.main()

@@ -141,6 +141,15 @@ select:focus,input:focus,textarea:focus{outline:2px solid var(--accent-soft);bor
 
 /* Bitácora */
 .tabla-env{overflow:auto;max-height:420px}
+.interruptor{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-2);user-select:none}
+.interruptor input{position:absolute;opacity:0;width:0;height:0}
+.interruptor .riel{width:36px;height:20px;border-radius:999px;background:var(--border-strong);position:relative;transition:background .15s;flex:none}
+.interruptor .riel::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
+.interruptor input:checked + .riel{background:var(--ok)}
+.interruptor input:checked + .riel::after{transform:translateX(16px)}
+.interruptor input:focus-visible + .riel{outline:2px solid var(--accent);outline-offset:2px}
+.interruptor input:disabled + .riel{opacity:.45;cursor:not-allowed}
+.interruptor.ocupado{opacity:.6;pointer-events:none}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 thead th{position:sticky;top:0;background:var(--surface-2);text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;padding:9px 14px;border-bottom:1px solid var(--border)}
 tbody td{padding:9px 14px;border-bottom:1px solid #f2f4f7;vertical-align:top}
@@ -288,7 +297,7 @@ tbody td.mono{white-space:nowrap}
         <div class="acceso">
           <button onclick="mostrar('agente')"><b>Conversar con el agente</b><span>Consultas RAG y acciones críticas con aprobación humana</span></button>
           <button onclick="mostrar('tareas')"><b>Publicar un evento</b><span>Tareas asíncronas con reintentos, backoff y DLQ</span></button>
-          <button onclick="mostrar('servicios')"><b>Simular una caída</b><span>Detenga un contenedor y observe el aislamiento del fallo</span></button>
+          <button onclick="mostrar('servicios')"><b>Simular una caída</b><span>Apague un servicio con su interruptor y observe el aislamiento del fallo</span></button>
         </div>
       </section>
 
@@ -361,10 +370,10 @@ tbody td.mono{white-space:nowrap}
         <section class="panel">
           <div class="panel-cab"><div><h2>Estado de los servicios</h2><p>Cada servicio corre en su propio contenedor; solo el gateway publica un puerto</p></div></div>
           <div class="tabla-env"><table>
-            <thead><tr><th>Servicio</th><th>Puerto</th><th>Responsabilidad</th><th>Equivalente AWS</th><th>Estado</th></tr></thead>
+            <thead><tr><th>Servicio</th><th>Puerto</th><th>Responsabilidad</th><th>Equivalente AWS</th><th>Estado</th><th>Encendido</th></tr></thead>
             <tbody id="tablaServicios"></tbody>
           </table></div>
-          <div class="nota">Para simular una caída, en una terminal ejecute <code>docker compose stop tool_service</code> y luego <code>docker compose start tool_service</code>. El panel se actualiza cada 3 segundos.</div>
+          <div class="nota">Use el interruptor para apagar un servicio: el proceso sigue vivo pero responde 503 a todo, como si estuviera caído, y los demás deben aislar el fallo (por ejemplo, con <code>tool_service</code> apagado el circuit breaker se abre; con <code>worker</code> apagado las tareas esperan en la cola). Requiere rol administrador y queda registrado en la bitácora. El gateway no se puede apagar porque es la entrada al panel. Para una caída real del contenedor: <code>docker compose stop tool_service</code>.</div>
         </section>
       </section>
 
@@ -432,11 +441,12 @@ async function refrescarEstado(){
   }
   $('n-cliente').setAttribute('class', 'nodo ' + (s.status === 200 ? 'ok' : 'err'));
   $('kServicios').textContent = s.status === 200 ? activos : 0;
+  apagados = new Set(s.datos.apagados || []);
   pintarServicios(s.status === 200 ? servicios : null);
   const caidos = nombres.filter(n => !servicios[n]);
   const g = $('estadoGlobal'); g.replaceChildren();
   if (s.status !== 200){ g.append(el('span', {class:'punto err'}), el('span', {text:'Gateway sin respuesta'})); }
-  else if (caidos.length){ g.append(el('span', {class:'punto err'}), el('span', {text:`${caidos.join(', ')} fuera de servicio`})); }
+  else if (caidos.length){ g.append(el('span', {class:'punto err'}), el('span', {text: caidos.map(n => n + (apagados.has(n) ? ' apagado' : ' fuera de servicio')).join(' · ')})); }
   else { g.append(el('span', {class:'punto ok'}), el('span', {text:'Todos los servicios operativos'})); }
 
   const m = await api('GET', '/v1/metricas', TK.auditor);
@@ -581,7 +591,7 @@ function pintarTareas(){
 /* ---------- Bitácora ---------- */
 const CATEGORIA = {
   mensaje_recibido:'info', respuesta_generada:'ok', guardrail_evaluado:'', aprobacion_solicitada:'warn', aprobacion_decidida:'acento',
-  accion_critica_ejecutada:'ok', tarea_creada:'info', tarea_completada:'ok', tarea_reintentable:'warn', tarea_en_dlq:'err', herramienta_fallida:'err'};
+  accion_critica_ejecutada:'ok', tarea_creada:'info', tarea_completada:'ok', tarea_reintentable:'warn', tarea_en_dlq:'err', herramienta_fallida:'err', servicio_apagado:'warn', servicio_encendido:'ok'};
 async function cargarBitacora(){
   const r = await api('GET', '/v1/auditoria?limit=60', TK.auditor);
   if (r.status === 200){ eventos = r.datos.eventos; pintarBitacora(); pintarActividad(); }
@@ -626,6 +636,16 @@ function cuenta(id, n, ambar){
   const c = $('cuenta-' + id); if (!c) return;
   c.textContent = n; c.classList.toggle('visible', n > 0); c.classList.toggle('ambar', !!ambar);
 }
+let apagados = new Set();
+const cambiando = new Set();
+async function energia(nombre, encendido){
+  cambiando.add(nombre); pintarServicios(ultimoEstado);
+  const r = await api('POST', `/v1/servicios/${nombre}/energia`, TK.admin, {encendido});
+  cambiando.delete(nombre);
+  if (r.status !== 200) alert(`No se pudo ${encendido ? 'encender' : 'apagar'} ${nombre}: ${r.datos.error || 'HTTP ' + r.status}`);
+  await refrescarEstado(); cargarBitacora();
+}
+let ultimoEstado = null;
 const SERVICIOS = [
   ['api_gateway', 8080, 'Autenticación, roles, límite de tasa, interfaz', 'API Gateway + Cognito'],
   ['orchestrator', 8081, 'Guardrails, PII, idempotencia, LLM', 'AgentCore Runtime'],
@@ -635,16 +655,30 @@ const SERVICIOS = [
   ['worker', 8085, 'Consumo con reintentos y backoff', 'Workers Fargate'],
 ];
 function pintarServicios(estado){
+  ultimoEstado = estado;
   const t = $('tablaServicios'); t.replaceChildren();
   let caidos = 0;
   for (const [n, p, r, aws] of SERVICIOS){
     const ok = estado ? !!estado[n] : false; if (!ok) caidos++;
+    const apagado = apagados.has(n);
+    const etiqueta = ok ? 'Operativo' : apagado ? 'Apagado' : 'Caído';
+    let control;
+    if (n === 'api_gateway') control = el('span', {class:'svc-rol', text:'Siempre activo'});
+    else {
+      const casilla = el('input', {type:'checkbox', 'aria-label':`Encender o apagar ${n}`});
+      casilla.checked = ok;
+      casilla.disabled = !ok && !apagado;          // caído de verdad: no se enciende desde aquí
+      casilla.addEventListener('change', () => energia(n, casilla.checked));
+      control = el('label', {class:'interruptor' + (cambiando.has(n) ? ' ocupado' : ''), title: casilla.disabled ? 'Contenedor detenido: use docker compose start' : ''},
+        casilla, el('span', {class:'riel'}), el('span', {text: cambiando.has(n) ? '…' : ok ? 'Encendido' : 'Apagado'}));
+    }
     t.append(el('tr', {},
       el('td', {}, el('span', {class:'svc-nombre'}, el('span', {class:'punto ' + (ok ? 'ok' : 'err')}), el('span', {class:'mono', text:n}))),
       el('td', {class:'mono', text:String(p)}),
       el('td', {class:'svc-rol', text:r}),
       el('td', {class:'svc-rol', text:aws}),
-      el('td', {}, el('span', {class:'badge ' + (ok ? 'ok' : 'err'), text: ok ? 'Operativo' : 'Caído'}))));
+      el('td', {}, el('span', {class:'badge ' + (ok ? 'ok' : apagado ? 'warn' : 'err'), text: etiqueta})),
+      el('td', {}, control)));
   }
   cuenta('servicios', caidos);
   $('puntoPie').className = 'punto ' + (caidos ? 'err' : 'ok');

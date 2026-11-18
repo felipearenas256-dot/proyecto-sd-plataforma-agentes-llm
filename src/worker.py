@@ -6,7 +6,7 @@ import threading
 import time
 from urllib.parse import urlparse
 
-from common import JSONHandler, http_json, load_config, log, service_url, serve
+from common import APAGADO, JSONHandler, http_json, load_config, log, service_url, serve
 
 SERVICE_NAME = "worker"
 _CFG = load_config()
@@ -48,6 +48,9 @@ def procesar_una() -> dict:
 
 def _bucle() -> None:
     while True:
+        if APAGADO.is_set():          # apagado desde el panel: deja de consumir la cola
+            time.sleep(0.5)
+            continue
         try:
             procesar_una()
         except Exception as exc:  # el worker nunca debe morir por una tarea fallida

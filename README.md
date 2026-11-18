@@ -23,7 +23,7 @@ docker compose down
 python scripts/run_all.py
 
 # Pruebas (con Docker y run_all detenidos)
-python -m unittest discover -s tests -v   # 25 pruebas, ~30 s
+python -m unittest discover -s tests -v   # 26 pruebas, ~33 s
 ```
 
 Instrucciones completas en [MANUAL_INSTALACION.md](MANUAL_INSTALACION.md).
@@ -46,7 +46,7 @@ Instrucciones completas en [MANUAL_INSTALACION.md](MANUAL_INSTALACION.md).
 | Prueba | Resultado |
 |---|---|
 | Suite automatizada | 25/25 correctas (funcionales, integración, concurrencia, rendimiento, tolerancia a fallos) |
-| Rendimiento (250 solicitudes, 25 concurrentes) | 254,9 req/s · p95 = 130 ms (requisito ≤ 500 ms) |
+| Rendimiento (250 solicitudes, 25 concurrentes) | 236,8 req/s · p95 = 134 ms (requisito ≤ 500 ms) |
 | 20 reintentos simultáneos con la misma clave | 1 tarea y 1 conversación (antes de la corrección: 7 y 16) |
 | Caída real de `tool_service` | Los otros 5 servicios siguen operando; la tarea va a la DLQ y se recupera al reiniciar |
 
@@ -63,5 +63,5 @@ Instrucciones completas en [MANUAL_INSTALACION.md](MANUAL_INSTALACION.md).
 ├── evidencias/                    Resultados de pruebas, métricas y demo Docker
 ├── scripts/                       Arranque, demo Docker y generación de artefactos
 ├── src/                           Seis servicios + adaptador LLM + interfaz web
-└── tests/                         25 pruebas automatizadas
+└── tests/                         26 pruebas automatizadas
 ```

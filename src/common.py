@@ -26,6 +26,9 @@ DATA_DIR = ROOT / "data"
 _CONFIG_CACHE: dict | None = None
 _WRITE_LOCK = threading.Lock()
 _AUDIT_LOCK = threading.Lock()
+# Interruptor de energía del servicio: cuando está activo, el proceso sigue vivo pero
+# responde 503 a todo (incluido /health), igual que un servicio caído para sus clientes.
+APAGADO = threading.Event()
 
 
 def load_config() -> dict:
@@ -184,10 +187,40 @@ class CircuitBreaker:
             self.abierto_desde = 0.0
 
 
+def _con_interruptor(metodo_original):
+    """Envuelve do_GET/do_POST: atiende /interno/energia y bloquea todo lo demás si está apagado."""
+    from urllib.parse import urlparse
+
+    def envuelto(self) -> None:
+        if not getattr(self, "APAGABLE", True):   # el gateway público nunca se apaga
+            metodo_original(self)
+        elif urlparse(self.path).path == "/interno/energia":
+            if self.command == "POST":
+                encendido = bool(self.body_json().get("encendido", True))
+                (APAGADO.clear if encendido else APAGADO.set)()
+                log(self.server_name_svc, "encendido desde el panel" if encendido else "apagado desde el panel")
+            self.send_json(200, {"encendido": not APAGADO.is_set()})
+        elif APAGADO.is_set():
+            self.send_json(503, {"error": "Servicio apagado desde el panel", "apagado": True})
+        else:
+            metodo_original(self)
+    return envuelto
+
+
 class JSONHandler(BaseHTTPRequestHandler):
     """Handler base con respuestas JSON y logging silencioso."""
 
     server_version = "AgentsPlatformDemo/1.0"
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        for nombre in ("do_GET", "do_POST"):
+            if nombre in cls.__dict__:
+                setattr(cls, nombre, _con_interruptor(cls.__dict__[nombre]))
+
+    @property
+    def server_name_svc(self) -> str:
+        return getattr(self.server, "nombre_servicio", "servicio")
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
@@ -233,6 +266,7 @@ def serve(service_name: str, handler: type[BaseHTTPRequestHandler]) -> None:
     # BIND_HOST=0.0.0.0 permite que otros contenedores alcancen el servicio.
     host = os.environ.get("BIND_HOST", cfg["host"])
     server = ThreadingHTTPServer((host, cfg["port"]), handler)
+    server.nombre_servicio = service_name
     log(service_name, f"escuchando en http://{host}:{cfg['port']}")
     try:
         server.serve_forever()

@@ -1,6 +1,6 @@
 EVIDENCIAS DE PRUEBAS - Prototipo local de plataforma de agentes LLM
 Comando: python -m unittest discover -s tests -v
-Fecha: 17/11/2026 19:46 · Python 3.12.10 · Windows 11
+Fecha: 18/11/2026 18:33 · Python 3.12.10 · Windows 11
 
 test_01_40_chat_simultaneos (test_concurrencia.PruebasConcurrencia.test_01_40_chat_simultaneos) ... ok
 test_02_20_tareas_simultaneas (test_concurrencia.PruebasConcurrencia.test_02_20_tareas_simultaneas) ... ok
@@ -29,17 +29,19 @@ test_04_idempotencia_ante_reintentos_de_red (test_tolerancia_fallos.PruebasToler
 test_05_circuit_breaker (test_tolerancia_fallos.PruebasTolerancia.test_05_circuit_breaker) ... ok
 test_06_caida_real_de_un_servicio_y_recuperacion (test_tolerancia_fallos.PruebasTolerancia.test_06_caida_real_de_un_servicio_y_recuperacion)
 Se mata el proceso tool_service y se observa aislamiento, DLQ y recuperación. ... ok
+test_07_apagar_y_encender_servicio_desde_el_panel (test_tolerancia_fallos.PruebasTolerancia.test_07_apagar_y_encender_servicio_desde_el_panel)
+El interruptor del panel apaga un servicio (503) sin matar el proceso y lo vuelve a encender. ... ok
 
 ----------------------------------------------------------------------
-Ran 25 tests in 30.958s
+Ran 26 tests in 32.577s
 
 OK
 
-[concurrencia] 40 solicitudes en 0.579s (69.1 req/s), 0 errores
+[concurrencia] 40 solicitudes en 0.555s (72.1 req/s), 0 errores
 
 [concurrencia] 20 solicitudes con la misma clave -> 1 tarea y 1 conversación
 
-[rendimiento] 250 solicitudes, concurrencia 25: 254.9 req/s, p50=83.0 ms, p95=130.4 ms, p99=598.2 ms, errores=0
+[rendimiento] 250 solicitudes, concurrencia 25: 236.8 req/s, p50=82.2 ms, p95=133.8 ms, p99=601.8 ms, errores=0
 
 [tolerancia] tarea completada tras 3 intentos (2 reintentos)
 

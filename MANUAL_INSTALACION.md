@@ -40,7 +40,7 @@ El primer comando construye la imagen `plataforma-agentes-llm:1.0` y levanta los
 - **Interfaz web:** http://127.0.0.1:8080/
 - **Demostración guiada con caída y recuperación de un nodo:** `python scripts/demo_docker.py` (guarda el resultado en `evidencias/docker_demo.txt`)
 - **Registros de un servicio:** `docker compose logs -f worker`
-- **Simular la caída de un nodo:** `docker compose stop tool_service` y luego `docker compose start tool_service`
+- **Simular la caída de un nodo:** en la vista *Servicios* del panel, desactive el interruptor de `tool_service` (o de cualquier servicio interno) y vuelva a activarlo. Para una caída real del contenedor: `docker compose stop tool_service` y luego `docker compose start tool_service`
 - **Detener todo:** `docker compose down` (añada `-v` para borrar también el volumen de datos)
 
 Solo se publica el puerto 8080. Los demás servicios viven en la red privada `plataforma` y no son accesibles desde el equipo anfitrión.

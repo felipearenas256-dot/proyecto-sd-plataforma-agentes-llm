@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 
 from common import (
     JSONHandler,
+    append_audit,
     http_json,
     load_config,
     log,
@@ -27,6 +28,7 @@ SERVICIOS_INTERNOS = ["orchestrator", "tool_service", "queue_service", "audit_se
 
 
 _SALUD: dict[str, bool] = {}
+_APAGADOS: set[str] = set()
 _SALUD_LOCK = threading.Lock()
 
 
@@ -37,9 +39,11 @@ def _vigilar(nombre: str) -> None:
     fallar (la resolución DNS de un contenedor detenido no respeta el timeout HTTP).
     """
     while True:
-        ok = http_json("GET", service_url(nombre, "/health"), timeout=0.8)[0] == 200
+        status, cuerpo = http_json("GET", service_url(nombre, "/health"), timeout=0.8)
         with _SALUD_LOCK:
-            _SALUD[nombre] = ok
+            _SALUD[nombre] = status == 200
+            # Distingue "apagado desde el panel" (se puede volver a encender) de "caído".
+            (_APAGADOS.add if status == 503 and cuerpo.get("apagado") else _APAGADOS.discard)(nombre)
         time.sleep(1.0)
 
 
@@ -98,6 +102,8 @@ def _reenviar(metodo: str, servicio: str, ruta: str, cuerpo: dict, headers: dict
 
 
 class Handler(JSONHandler):
+    APAGABLE = False
+
     def do_GET(self) -> None:
         ruta = urlparse(self.path).path
         if ruta in {"/", "/index.html"}:
@@ -105,7 +111,10 @@ class Handler(JSONHandler):
         elif ruta == "/health":
             self.send_json(200, {"estado": "OK", "servicio": SERVICE_NAME})
         elif ruta == "/v1/salud":
-            self.send_json(200, {"servicios": _salud_global()})
+            servicios = _salud_global()
+            with _SALUD_LOCK:
+                apagados = sorted(_APAGADOS)
+            self.send_json(200, {"servicios": servicios, "apagados": apagados})
         elif ruta == "/v1/metricas":
             # Métricas de operación para el panel: cola, DLQ y circuit breaker.
             claims = _autorizar(self, {"ADMINISTRADOR", "AUDITOR"})
@@ -175,6 +184,25 @@ class Handler(JSONHandler):
                                           f"/aprobaciones/{aprobacion_id}/decidir",
                                           {"decision": cuerpo.get("decision"),
                                            "aprobador": claims["sub"]}, {})
+            self.send_json(status, respuesta)
+
+        elif ruta.startswith("/v1/servicios/") and ruta.endswith("/energia"):
+            # Encender o apagar un servicio interno desde el panel (solo administrador).
+            claims = _autorizar(self, {"ADMINISTRADOR"})
+            if not claims:
+                return
+            nombre = ruta.split("/")[3]
+            if nombre not in SERVICIOS_INTERNOS:
+                self.send_json(404, {"error": "Servicio desconocido o no apagable"})
+                return
+            encendido = bool(cuerpo.get("encendido", True))
+            status, respuesta = _reenviar("POST", nombre, "/interno/energia", {"encendido": encendido}, {})
+            if status == 200:
+                with _SALUD_LOCK:     # refleja el cambio sin esperar al siguiente sondeo
+                    _SALUD[nombre] = encendido
+                    (_APAGADOS.discard if encendido else _APAGADOS.add)(nombre)
+                append_audit("servicio_encendido" if encendido else "servicio_apagado",
+                             claims["sub"], nombre, "OK")
             self.send_json(status, respuesta)
 
         elif ruta == "/v1/tareas/reintentar-dlq":
