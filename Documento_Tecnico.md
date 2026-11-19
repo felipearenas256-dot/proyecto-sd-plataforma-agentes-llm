@@ -16,7 +16,7 @@
 
 <!-- toc -->
 
-**Nota de alcance.** El proyecto entrega dos niveles complementarios: (1) una arquitectura de referencia sobre AWS, especificada y documentada, y (2) un prototipo funcional que implementa sus mecanismos distribuidos con seis servicios independientes. El prototipo se ejecuta como seis procesos locales o como seis contenedores Docker en una red privada, y se comunica por HTTP/JSON. Implementa colas con DLQ, reintentos con backoff, circuit breaker, idempotencia, timeouts escalonados, control de acceso por roles, enmascaramiento de datos personales y auditoría. El modelo de lenguaje funciona en modo simulado por defecto y puede conectarse a Claude (API de Anthropic o Amazon Bedrock) mediante una variable de entorno. No se reportan despliegues en AWS ni métricas de producción: todas las evidencias corresponden al prototipo y se identifican como tales.
+**Nota de alcance.** El proyecto entrega dos niveles complementarios: (1) una arquitectura de referencia sobre AWS, especificada y documentada, y (2) un prototipo funcional que implementa sus mecanismos distribuidos con seis servicios independientes. El prototipo se ejecuta como seis procesos locales o en Docker como ocho contenedores (el worker con tres réplicas) en una red privada, y se comunica por HTTP/JSON. Implementa colas con DLQ, reintentos con backoff, circuit breaker, idempotencia, timeouts escalonados, control de acceso por roles, enmascaramiento de datos personales y auditoría. El modelo de lenguaje funciona en modo simulado por defecto y puede conectarse a Claude (API de Anthropic o Amazon Bedrock) mediante una variable de entorno. No se reportan despliegues en AWS ni métricas de producción: todas las evidencias corresponden al prototipo y se identifican como tales.
 
 <!-- pagebreak -->
 
@@ -324,7 +324,7 @@ El prototipo está escrito en Python 3.12 y usa solo la biblioteca estándar (`h
 | `src/queue_service.py` · `src/worker.py` | Cola con DLQ y consumidor con reintentos |
 | `src/audit_service.py` | Consulta de la bitácora |
 | `tests/` | 29 pruebas automatizadas en cinco archivos |
-| `Dockerfile` · `docker-compose.yml` | Imagen y orquestación de los seis contenedores |
+| `Dockerfile` · `docker-compose.yml` | Imagen y orquestación de los contenedores (worker con tres réplicas) |
 | `config/config.json` | Puertos, tokens de demostración, límites y políticas |
 | `docs/` | Diagramas Mermaid (`.mmd`) y sus imágenes, capturas de pantalla |
 | `evidencias/` | Resultados de pruebas, métricas de rendimiento y demostración en Docker |
@@ -600,7 +600,7 @@ Los hallazgos más relevantes son:
 - **Seguridad.** Se verificaron las respuestas 401, 403, 400 y 429, el rechazo (409) de una segunda decisión sobre la misma aprobación, y que ningún correo ni número telefónico aparece en claro en la bitácora.
 - **Contenedores.** En Docker, el flujo completo funcionó entre contenedores. Con `tool_service` detenido, el chat respondió 503, la cola siguió aceptando tareas (202), la tarea terminó en la DLQ y, al reiniciar el contenedor, se reprocesó hasta COMPLETADA (`evidencias/docker_demo.txt`).
 
-![Figura 14. Demostración sobre los seis contenedores, con caída y recuperación de un nodo.](docs/capturas/demo_docker.png)
+![Figura 14. Demostración sobre los ocho contenedores: caída y recuperación de un nodo, reparto entre las tres réplicas del worker, caída de una réplica y traza distribuida.](docs/capturas/demo_docker.png)
 
 ### 13.3 Rendimiento: medición, diagnóstico y optimización
 
