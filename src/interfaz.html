@@ -208,6 +208,28 @@ tbody td.mono{white-space:nowrap}
 .vista#v-agente .chat{height:calc(100vh - 150px);min-height:520px}
 .svc-nombre{display:flex;align-items:center;gap:8px;font-weight:600}
 .svc-rol{color:var(--muted)}
+.modal-fondo{position:fixed;inset:0;background:rgba(16,24,40,.45);display:none;align-items:flex-start;justify-content:center;padding:6vh 16px;z-index:50}
+.modal-fondo.abierto{display:flex}
+.modal{background:var(--surface);border-radius:var(--radius);box-shadow:0 20px 40px rgba(16,24,40,.2);width:min(860px,100%);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+.modal .panel-cab{flex:none}
+.modal-cuerpo{overflow:auto;padding:14px 18px;display:grid;gap:14px}
+.cascada{display:grid;gap:4px}
+.span-fila{display:grid;grid-template-columns:150px 1fr 64px;align-items:center;gap:10px;font-size:12px}
+.span-fila .svc{font-family:var(--mono);font-size:11.5px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.span-pista{position:relative;height:22px;background:var(--surface-2);border-radius:5px}
+.span-barra{position:absolute;top:3px;bottom:3px;min-width:3px;border-radius:4px;background:var(--info);opacity:.85}
+.span-barra.err{background:var(--err)}
+.span-barra.warn{background:var(--warn)}
+.span-barra.ok{background:var(--ok)}
+.span-op{position:absolute;top:3px;font-size:11px;color:var(--text);white-space:nowrap;pointer-events:none;line-height:16px}
+.span-fila .ms{font-family:var(--mono);font-size:11.5px;color:var(--muted);text-align:right}
+.enlace{background:none;border:0;padding:0;color:var(--accent);font:inherit;font-size:12px;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.enlace.mono{font-family:var(--mono);font-size:11.5px}
+.workers{display:grid;gap:8px}
+.worker-fila{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;font-size:12.5px;border:1px solid var(--border);border-radius:10px;padding:8px 12px}
+.worker-fila .barra{height:6px;border-radius:999px;background:var(--surface-2);overflow:hidden}
+.worker-fila .barra i{display:block;height:100%;background:var(--accent)}
+.mini-kpis{display:flex;gap:8px;flex-wrap:wrap}
 .nota{font-size:12.5px;color:var(--muted);padding:12px 18px;border-top:1px solid var(--border);background:var(--surface-2)}
 .nota code{background:#eef0f4;padding:1px 6px;border-radius:5px}
 @media (max-width:1100px){.dos{grid-template-columns:1fr}.acceso{grid-template-columns:1fr}}
@@ -237,7 +259,7 @@ tbody td.mono{white-space:nowrap}
     </nav>
     <div class="lateral-pie">
       <div class="fila"><span class="punto" id="puntoPie"></span><span id="textoPie">Verificando…</span></div>
-      <div>Despliegue: <b>6 contenedores</b></div>
+      <div>Despliegue: <b>8 contenedores</b></div>
       <div>Gateway: <b id="hostPie"></b></div>
     </div>
   </aside>
@@ -281,7 +303,7 @@ tbody td.mono{white-space:nowrap}
           <g class="nodo" id="n-tool_service"><rect x="352" y="30" width="88" height="36" rx="8"/><text x="396" y="46" text-anchor="middle">tool_service</text><text class="sub" x="396" y="58" text-anchor="middle">:8082</text></g>
           <g class="nodo" id="n-audit_service"><rect x="110" y="134" width="92" height="36" rx="8"/><text x="156" y="150" text-anchor="middle">audit_service</text><text class="sub" x="156" y="162" text-anchor="middle">:8084</text></g>
           <g class="nodo" id="n-queue_service"><rect x="230" y="134" width="94" height="36" rx="8"/><text x="277" y="150" text-anchor="middle">queue_service</text><text class="sub" x="277" y="162" text-anchor="middle">:8083 · cola + DLQ</text></g>
-          <g class="nodo" id="n-worker"><rect x="352" y="134" width="88" height="36" rx="8"/><text x="396" y="150" text-anchor="middle">worker</text><text class="sub" x="396" y="162" text-anchor="middle">:8085</text></g>
+          <g class="nodo" id="n-worker"><rect x="352" y="134" width="88" height="36" rx="8"/><text x="396" y="150" text-anchor="middle">worker</text><text class="sub" id="subWorker" x="396" y="162" text-anchor="middle">:8085</text></g>
         </svg>
         <div class="leyenda">
           <span><i class="punto ok"></i>Operativo</span>
@@ -350,15 +372,24 @@ tbody td.mono{white-space:nowrap}
           <div class="lista" id="tareas"><div class="vacio-chico">Publique un evento para ver su recorrido.</div></div>
         </div>
       </section>
+        <div style="display:grid;gap:16px">
+        <section class="panel" aria-label="Réplicas del worker">
+          <div class="panel-cab"><div><h2>Réplicas del worker</h2><p>Escalado horizontal: compiten por la misma cola</p></div></div>
+          <div class="panel-cuerpo" style="display:grid;gap:12px">
+            <div class="mini-kpis" id="kpisCola"></div>
+            <div class="workers" id="workers"><div class="vacio-chico">Sin datos de la cola.</div></div>
+          </div>
+        </section>
         <section class="panel"><div class="panel-cab"><div><h2>Cómo funciona</h2><p>Recorrido de un evento por el sistema</p></div></div>
           <div class="panel-cuerpo" style="display:grid;gap:12px;font-size:13px;color:var(--text-2)">
             <div><span class="badge info">1</span>&nbsp; El sistema externo publica el evento en <code>POST /v1/tareas</code> y recibe <b>202</b> de inmediato.</div>
-            <div><span class="badge info">2</span>&nbsp; El orquestador lo deja en la <b>cola</b>; el <b>worker</b> lo consume en su propio contenedor.</div>
+            <div><span class="badge info">2</span>&nbsp; El orquestador lo deja en la <b>cola</b>; una de las <b>réplicas del worker</b> lo toma con un <i>lease</i> de 30 s y lo confirma (ack) al terminar. Si la réplica muere antes, el lease vence y otra la retoma.</div>
             <div><span class="badge warn">3</span>&nbsp; Si la herramienta falla, el worker reintenta hasta <b>3 veces</b> con espera exponencial (0,05 s · 0,10 s).</div>
             <div><span class="badge err">4</span>&nbsp; Si los 3 intentos fallan, la tarea pasa a la <b>DLQ</b> y el circuit breaker se abre.</div>
             <div><span class="badge ok">5</span>&nbsp; El administrador corrige la causa y la <b>reprocesa</b> desde la DLQ.</div>
+            <div><span class="badge acento">6</span>&nbsp; Todo el recorrido comparte un <b>X-Trace-Id</b>: «Ver traza» muestra cuánto tardó cada servicio.</div>
           </div>
-        </section></div>
+        </section></div></div>
       </section>
 
       <section class="vista" id="v-aprobaciones"><section class="panel" aria-label="Aprobaciones">
@@ -388,13 +419,21 @@ tbody td.mono{white-space:nowrap}
     </div>
     <div class="tabla-env">
       <table>
-        <thead><tr><th>Hora</th><th>Evento</th><th>Actor</th><th>Entidad</th><th>Resultado</th><th>Detalle</th></tr></thead>
-        <tbody id="bitacora"><tr><td colspan="6" class="vacio-chico">Cargando…</td></tr></tbody>
+        <thead><tr><th>Hora</th><th>Evento</th><th>Actor</th><th>Entidad</th><th>Resultado</th><th>Traza</th><th>Detalle</th></tr></thead>
+        <tbody id="bitacora"><tr><td colspan="7" class="vacio-chico">Cargando…</td></tr></tbody>
       </table>
     </div>
   </section></section>
     </main>
   </div>
+</div>
+
+<div class="modal-fondo" id="modalTraza" onclick="if (event.target === this) cerrarTraza()">
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="tituloTraza">
+    <div class="panel-cab"><div><h2 id="tituloTraza">Traza distribuida</h2><p id="subTraza">Spans registrados por cada servicio</p></div>
+      <div class="acciones"><button class="btn chico" onclick="cerrarTraza()">Cerrar</button></div></div>
+    <div class="modal-cuerpo" id="cuerpoTraza"></div>
+  </section>
 </div>
 
 <script>
@@ -442,6 +481,9 @@ async function refrescarEstado(){
   $('n-cliente').setAttribute('class', 'nodo ' + (s.status === 200 ? 'ok' : 'err'));
   $('kServicios').textContent = s.status === 200 ? activos : 0;
   apagados = new Set(s.datos.apagados || []);
+  replicas = s.datos.replicas || {};
+  const rw = replicas.worker;
+  $('subWorker').textContent = rw && rw.total > 1 ? `:8085 · ${rw.activas}/${rw.total} rép.` : ':8085';
   pintarServicios(s.status === 200 ? servicios : null);
   const caidos = nombres.filter(n => !servicios[n]);
   const g = $('estadoGlobal'); g.replaceChildren();
@@ -451,6 +493,7 @@ async function refrescarEstado(){
 
   const m = await api('GET', '/v1/metricas', TK.auditor);
   const cola = m.datos.cola, orq = m.datos.orquestador;
+  pintarWorkers(cola);
   $('kCola').textContent = cola ? cola.pendientes : '–';
   dlqActual = cola ? cola.en_dlq : 0;
   $('kDlq').textContent = cola ? cola.en_dlq : '–';
@@ -493,6 +536,7 @@ async function enviar(texto){
   const meta = el('div', {class:'meta'}, el('span', {class:'badge ' + (r.status < 300 ? 'ok' : r.status < 500 ? 'warn' : 'err'), text:'HTTP ' + r.status}), el('span', {class:'t', text:`${r.ms} ms · ${hora()}`}));
   if (r.status === 200){
     meta.append(el('span', {class:'badge acento', text:'LLM: ' + r.datos.proveedor_llm}));
+    if (r.datos.traza) meta.append(botonTraza(r.datos.traza, 'Ver traza'));
     const nodo = agregarMensaje('agente', r.datos.respuesta, meta);
     for (const d of r.datos.documentos || []){
       nodo.querySelector('.burbuja').after(el('div', {class:'fuente'}, el('span', {class:'badge info', text:d.id}), el('span', {}, el('b', {text:d.titulo}))));
@@ -546,7 +590,7 @@ async function crearTarea(){
   const fallas = Number($('fallas').value);
   const r = await api('POST', '/v1/tareas', TK.sistema, {evento:'webhook.crm', payload:{registros:12, fallar_veces:fallas}});
   if (r.status !== 202) return;
-  tareas.set(r.datos.id_tarea, {datos:{estado:'PENDIENTE', intentos:0}, fallas, creada:hora()});
+  tareas.set(r.datos.id_tarea, {datos:{estado:'PENDIENTE', intentos:0, traza:r.datos.traza}, fallas, creada:hora()});
   pintarTareas(); seguir(r.datos.id_tarea); refrescarEstado();
 }
 async function seguir(id){
@@ -584,7 +628,75 @@ function pintarTareas(){
     const detalle = e === 'COMPLETADA' && t.datos.resultado ? `${t.datos.resultado.registros_procesados} registros procesados` : escenario;
     lista.append(el('div', {class:'item'},
       el('div', {class:'fila'}, el('span', {class:'titulo mono', text:'tsk-' + corto(id)}), el('span', {class:'badge ' + tipo + ' derecha', text:etiqueta})),
-      el('div', {class:'fila'}, barras, el('span', {class:'detalle', text:`${n}/3 intentos · ${detalle}${t.reprocesada ? ' · reprocesada desde la DLQ' : ''}`}), el('span', {class:'detalle derecha', text:t.creada}))));
+      el('div', {class:'fila'}, barras, el('span', {class:'detalle', text:`${n}/3 intentos · ${detalle}${t.reprocesada ? ' · reprocesada desde la DLQ' : ''}`}), el('span', {class:'detalle derecha', text:t.creada})),
+      el('div', {class:'fila'}, el('span', {class:'detalle', text: t.datos.procesada_por ? 'Procesada por ' + t.datos.procesada_por : 'Esperando a un worker'}),
+        t.datos.traza ? el('span', {class:'derecha'}, botonTraza(t.datos.traza, 'Ver traza')) : null)));
+  }
+}
+
+/* ---------- Réplicas del worker ---------- */
+function pintarWorkers(cola){
+  const k = $('kpisCola'); k.replaceChildren();
+  const w = $('workers'); w.replaceChildren();
+  if (!cola){ w.append(el('div', {class:'vacio-chico', text:'La cola no responde.'})); return; }
+  k.append(el('span', {class:'badge info', text:`En vuelo: ${cola.en_vuelo}`}),
+    el('span', {class:'badge ok', text:`Confirmadas: ${cola.confirmadas}`}),
+    el('span', {class:'badge ' + (cola.reentregadas ? 'warn' : ''), text:`Reentregadas por lease vencido: ${cola.reentregadas}`}),
+    el('span', {class:'badge', text:`Lease: ${cola.visibilidad_segundos} s`}));
+  const lista = (cola.workers || []).filter(x => x.activo || x.confirmadas);
+  if (!lista.length){ w.append(el('div', {class:'vacio-chico', text:'Ningún worker ha pedido tareas todavía.'})); return; }
+  const max = Math.max(1, ...lista.map(x => x.confirmadas));
+  for (const x of lista){
+    const barra = el('div', {class:'barra'}, el('i', {style:`width:${Math.round(100 * x.confirmadas / max)}%`}));
+    w.append(el('div', {class:'worker-fila'},
+      el('span', {class:'svc-nombre'}, el('span', {class:'punto ' + (x.activo ? 'ok' : 'err')}), el('span', {class:'mono', text:x.id})),
+      barra,
+      el('span', {class:'detalle', text:`${x.confirmadas} confirmadas`})));
+  }
+}
+
+/* ---------- Traza distribuida ---------- */
+function botonTraza(traza, texto){
+  return Object.assign(el('button', {class:'enlace' + (texto.startsWith('Ver') ? '' : ' mono'), type:'button', title:traza, text:texto}), {onclick:() => abrirTraza(traza)});
+}
+function cerrarTraza(){ $('modalTraza').classList.remove('abierto'); }
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') cerrarTraza(); });
+async function abrirTraza(traza){
+  $('modalTraza').classList.add('abierto');
+  $('tituloTraza').textContent = 'Traza ' + traza;
+  const c = $('cuerpoTraza'); c.replaceChildren(el('div', {class:'vacio-chico', text:'Cargando…'}));
+  const r = await api('GET', '/v1/trazas/' + encodeURIComponent(traza), TK.auditor);
+  c.replaceChildren();
+  if (r.status !== 200){ c.append(el('div', {class:'vacio-chico', text:r.datos.error || 'No fue posible cargar la traza.'})); return; }
+  const spans = r.datos.spans;
+  const t0 = Math.min(...spans.map(x => x.inicio));
+  const fin = Math.max(...spans.map(x => x.inicio + x.ms / 1000));
+  const total = Math.max(fin - t0, 0.001);
+  const servicios = new Set(spans.map(x => x.servicio));
+  $('subTraza').textContent = `${spans.length} spans · ${servicios.size} servicios · ${Math.round(total * 1000)} ms de principio a fin`;
+  const cascada = el('div', {class:'cascada'});
+  for (const x of spans){
+    const izq = 100 * (x.inicio - t0) / total, ancho = Math.max(100 * (x.ms / 1000) / total, 0.4);
+    const est = String(x.estado);
+    const tipo = /^5|EN_DLQ/.test(est) ? 'err' : /^4/.test(est) ? 'warn' : /^2|COMPLETADA/.test(est) ? 'ok' : '';
+    cascada.append(el('div', {class:'span-fila'},
+      el('span', {class:'svc', title:x.servicio, text:x.servicio}),
+      el('div', {class:'span-pista', title:`${x.operacion} · ${est}`},
+        el('div', {class:'span-barra ' + tipo, style:`left:${izq}%;width:${ancho}%`}),
+        // La etiqueta va a la derecha de la barra; si no cabe, a su izquierda.
+        el('span', {class:'span-op', style: izq + ancho < 62 ? `left:calc(${izq + ancho}% + 6px)` : `right:calc(${100 - izq}% + 6px)`, text:`${x.operacion} · ${est}`})),
+      el('span', {class:'ms', text:x.ms + ' ms'})));
+  }
+  c.append(cascada);
+  if (r.datos.eventos.length){
+    const lista = el('div', {class:'lista'});
+    for (const e of r.datos.eventos){
+      lista.append(el('div', {class:'fila', style:'display:flex;gap:8px;align-items:center;font-size:12.5px'},
+        el('span', {class:'mono', style:'color:var(--muted)', text:hora(new Date(e.ts))}),
+        el('span', {class:'badge ' + (CATEGORIA[e.tipo] ?? ''), text:e.tipo.replaceAll('_', ' ')}),
+        el('span', {class:'detalle', text:`${e.actor} · ${e.entidad} · ${e.resultado}`})));
+    }
+    c.append(el('div', {}, el('h2', {style:'font-size:13px;margin:4px 0 8px', text:'Eventos de auditoría de esta traza'}), lista));
   }
 }
 
@@ -600,7 +712,7 @@ function pintarBitacora(){
   const f = $('filtro').value.trim().toLowerCase();
   const filas = eventos.filter(e => !f || JSON.stringify(e).toLowerCase().includes(f));
   const cuerpo = $('bitacora'); cuerpo.replaceChildren();
-  if (!filas.length){ cuerpo.append(el('tr', {}, el('td', {colspan:'6', class:'vacio-chico', text:'Sin eventos todavía.'}))); return; }
+  if (!filas.length){ cuerpo.append(el('tr', {}, el('td', {colspan:'7', class:'vacio-chico', text:'Sin eventos todavía.'}))); return; }
   for (const e of filas){
     const det = Object.keys(e.detalle || {}).length ? JSON.stringify(e.detalle) : '';
     const resultadoTipo = /FALLO|AGOTADOS|ERROR|CRITICO|RECHAZAR/.test(e.resultado) ? 'warn' : '';
@@ -610,6 +722,7 @@ function pintarBitacora(){
       el('td', {class:'mono', text:e.actor}),
       el('td', {class:'mono', text:e.entidad}),
       el('td', {}, el('span', {class:'badge ' + resultadoTipo, text:e.resultado})),
+      el('td', {}, e.traza ? botonTraza(e.traza, e.traza.replace('trz-', '').slice(0, 8)) : ''),
       el('td', {class:'det', text:det})));
   }
 }
@@ -637,6 +750,7 @@ function cuenta(id, n, ambar){
   c.textContent = n; c.classList.toggle('visible', n > 0); c.classList.toggle('ambar', !!ambar);
 }
 let apagados = new Set();
+let replicas = {};
 const cambiando = new Set();
 async function energia(nombre, encendido){
   cambiando.add(nombre); pintarServicios(ultimoEstado);
@@ -652,7 +766,7 @@ const SERVICIOS = [
   ['tool_service', 8082, 'Herramientas y búsqueda RAG', 'Lambda + Knowledge Bases'],
   ['queue_service', 8083, 'Cola FIFO y DLQ', 'Amazon SQS'],
   ['audit_service', 8084, 'Consulta de la bitácora', 'CloudWatch Logs'],
-  ['worker', 8085, 'Consumo con reintentos y backoff', 'Workers Fargate'],
+  ['worker', 8085, 'Consumo con reintentos, backoff y lease (3 réplicas)', 'Workers Fargate / ECS'],
 ];
 function pintarServicios(estado){
   ultimoEstado = estado;
@@ -661,7 +775,8 @@ function pintarServicios(estado){
   for (const [n, p, r, aws] of SERVICIOS){
     const ok = estado ? !!estado[n] : false; if (!ok) caidos++;
     const apagado = apagados.has(n);
-    const etiqueta = ok ? 'Operativo' : apagado ? 'Apagado' : 'Caído';
+    const rep = replicas[n];
+    const etiqueta = (ok ? 'Operativo' : apagado ? 'Apagado' : 'Caído') + (rep && rep.total > 1 ? ` · ${rep.activas}/${rep.total}` : '');
     let control;
     if (n === 'api_gateway') control = el('span', {class:'svc-rol', text:'Siempre activo'});
     else {

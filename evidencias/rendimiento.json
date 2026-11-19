@@ -2,15 +2,15 @@
   "solicitudes": 250,
   "concurrencia": 25,
   "errores": 0,
-  "duracion_s": 1.056,
-  "throughput_rps": 236.8,
+  "duracion_s": 2.324,
+  "throughput_rps": 107.6,
   "latencia_ms": {
-    "min": 42.8,
-    "media": 98.3,
-    "p50": 82.2,
-    "p95": 133.8,
-    "p99": 601.8,
-    "max": 608.4
+    "min": 83.0,
+    "media": 224.9,
+    "p50": 217.3,
+    "p95": 303.6,
+    "p99": 733.5,
+    "max": 759.7
   },
   "p95_objetivo_ms": 500,
   "cumple_rnf09": true

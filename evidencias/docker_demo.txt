@@ -1,35 +1,62 @@
 === Demostración en contenedores (docker compose) ===
 SERVICE         STATUS                    PORTS
-api_gateway     Up 6 seconds (healthy)    0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp
-audit_service   Up 18 seconds (healthy)   
-orchestrator    Up 12 seconds (healthy)   
-queue_service   Up 18 seconds (healthy)   
-tool_service    Up 18 seconds (healthy)   
-worker          Up 6 seconds (healthy)
+api_gateway     Up 7 seconds (healthy)    0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp
+audit_service   Up 19 seconds (healthy)   
+orchestrator    Up 13 seconds (healthy)   
+queue_service   Up 19 seconds (healthy)   
+tool_service    Up 19 seconds (healthy)   
+worker          Up 7 seconds (healthy)    
+worker          Up 7 seconds (healthy)    
+worker          Up 7 seconds (healthy)
 
 1) Chat a través del API Gateway publicado en :8080
    HTTP 200 · proveedor=simulado · documentos=['doc-004']
    respuesta: Según la base de conocimiento (Procedimiento de reprocesamiento de la DLQ): Cuando una tarea agota sus tres reintentos queda en la cola de mensajes fallidos (DL...
 
 2) Tarea asíncrona: gateway -> orquestador -> cola -> worker (otro contenedor)
-   HTTP 202 · {'id_tarea': 'tsk-3f3f8e6e9471', 'estado': 'PENDIENTE'}
-   estado final: COMPLETADA · intentos=1 · resultado={'reporte_id': 'tsk-3f3f8e6e9471', 'registros_procesados': 30, 'estado': 'GENERADO'}
+   HTTP 202 · {'id_tarea': 'tsk-d38d56ae580f', 'estado': 'PENDIENTE', 'traza': 'trz-fb4908818700'}
+   estado final: COMPLETADA · intentos=1 · resultado={'reporte_id': 'tsk-d38d56ae580f', 'registros_procesados': 30, 'estado': 'GENERADO'}
 
 3) Caída de un nodo: docker compose stop tool_service
    chat con la herramienta caída -> HTTP 503 · No fue posible consultar la base de conocimiento
-   la cola sigue aceptando tareas -> HTTP 202 · {'id_tarea': 'tsk-05463f390631', 'estado': 'PENDIENTE'}
+   la cola sigue aceptando tareas -> HTTP 202 · {'id_tarea': 'tsk-799b0cc6ed66', 'estado': 'PENDIENTE', 'traza': 'trz-ee428fadc9cf'}
    tras 3 reintentos con backoff: estado=FALLIDA (enviada a la DLQ)
 
 4) Recuperación: docker compose start tool_service + reproceso de la DLQ
-   reintentar-dlq -> HTTP 202 · {'id': 'tsk-05463f390631', 'estado': 'REINTENTADA'}
-   estado final: COMPLETADA · resultado={'reporte_id': 'tsk-05463f390631', 'registros_procesados': 7, 'estado': 'GENERADO'}
+   reintentar-dlq -> HTTP 202 · {'id': 'tsk-799b0cc6ed66', 'estado': 'REINTENTADA'}
+   estado final: COMPLETADA · resultado={'reporte_id': 'tsk-799b0cc6ed66', 'registros_procesados': 7, 'estado': 'GENERADO'}
 
-5) Bitácora de auditoría (contenedor audit_service): 14 eventos
-   guardrail_evaluado: 2
-   herramienta_fallida: 1
-   mensaje_recibido: 2
-   respuesta_generada: 1
-   tarea_completada: 2
-   tarea_creada: 2
-   tarea_en_dlq: 1
-   tarea_reintentable: 3
+5) Escalado horizontal: tres réplicas del worker compiten por la misma cola
+   réplicas del worker: {'total': 3, 'activas': 3}
+   15 tareas publicadas -> reparto: {'worker-4e4867-1': 5, 'worker-d6a7e4-1': 5, 'worker-ea5be8-1': 5}
+
+6) Caída de una réplica: docker kill de un contenedor worker
+   réplicas del worker: {'total': 2, 'activas': 2} · worker operativo=True
+   10 tareas publicadas -> reparto entre las réplicas vivas: {'worker-4e4867-1': 5, 'worker-d6a7e4-1': 5}
+   tras docker compose up -d --scale worker=3: {'total': 3, 'activas': 3}
+   cola: confirmadas=27 · en_vuelo=0 · reentregadas=0 · pendientes=0
+
+7) Traza distribuida de una tarea (X-Trace-Id propagado entre contenedores)
+   traza trz-3d39bb522092: 7 spans
+     api_gateway            POST /v1/tareas                            6.2 ms  202
+     orchestrator           POST /tareas                               3.5 ms  202
+     queue_service          POST /queue                                0.6 ms  202
+     worker-ea5be8-1        procesar tsk-b11c9276ad2d                  9.1 ms  COMPLETADA
+     orchestrator           POST /interno/tareas/ejecutar              3.3 ms  200
+     tool_service           POST /tools/invocar                        0.6 ms  200
+     queue_service          POST /queue/ack                            0.2 ms  200
+
+8) Bitácora de auditoría (contenedor audit_service): 266 eventos
+   accion_critica_ejecutada: 6
+   aprobacion_decidida: 6
+   aprobacion_solicitada: 11
+   guardrail_evaluado: 30
+   herramienta_fallida: 8
+   mensaje_recibido: 30
+   respuesta_generada: 11
+   servicio_apagado: 3
+   servicio_encendido: 3
+   tarea_completada: 59
+   tarea_creada: 63
+   tarea_en_dlq: 6
+   tarea_reintentable: 30

@@ -72,12 +72,14 @@ class PruebasTolerancia(unittest.TestCase):
         self.assertEqual(stats["pendientes"], 1)
 
     def test_05_circuit_breaker(self):
-        breaker = CircuitBreaker(umbral=2, apertura=0.05)
+        # Ventana amplia (0,5 s): con 50 ms la prueba fallaba de forma intermitente
+        # si el equipo se demoraba más que eso entre fallo() y permite().
+        breaker = CircuitBreaker(umbral=2, apertura=0.5)
         breaker.fallo()
         breaker.fallo()
         self.assertEqual(breaker.estado, "ABIERTO")
         self.assertFalse(breaker.permite())
-        time.sleep(0.06)
+        time.sleep(0.55)
         self.assertTrue(breaker.permite())
         self.assertEqual(breaker.estado, "SEMIABIERTO")
         breaker.exito()
@@ -147,6 +149,35 @@ class PruebasTolerancia(unittest.TestCase):
         tipos = [e["tipo"] for e in get("/v1/auditoria?limit=20", token="demo-auditor-token")[1]["eventos"]]
         self.assertIn("servicio_apagado", tipos)
         self.assertIn("servicio_encendido", tipos)
+
+    def test_08_lease_vencido_reentrega_sin_duplicar_efectos(self):
+        """Un worker toma una tarea y muere sin confirmarla: el lease vence y otro la completa."""
+        _, creada = post("/v1/tareas", {"evento": "lease", "payload": {"registros": 1}},
+                         token="demo-admin-token", key="tol-lease")
+        tarea_id = creada["id_tarea"]
+        # 1. El worker "fantasma" recibe la tarea con un lease de 0,5 s y nunca la confirma.
+        status, entrega = http_json("GET", service_url("queue_service", "/queue/next?worker=fantasma&visibilidad=0.5"))
+        self.assertEqual((status, entrega["task"]["id"]), (200, tarea_id))
+        _, cola = http_json("GET", service_url("queue_service", "/stats"))
+        self.assertEqual((cola["pendientes"], cola["en_vuelo"]), (0, 1))
+        time.sleep(1.0)
+        # 2. El lease venció: la tarea vuelve a la cola y otro worker la completa.
+        _, worker = http_json("POST", service_url("worker", "/worker/run-once"))
+        self.assertEqual(worker["estado"], "COMPLETADA")
+        self.assertTrue(worker["confirmada"])
+        _, cola = http_json("GET", service_url("queue_service", "/stats"))
+        self.assertEqual((cola["reentregadas"], cola["confirmadas"], cola["en_vuelo"]), (1, 1, 0))
+        # 3. Si el fantasma revive e intenta confirmar con su recibo viejo, la cola lo rechaza.
+        status, _ = http_json("POST", service_url("queue_service", "/queue/ack"),
+                              {"id": tarea_id, "recibo": entrega["recibo"]})
+        self.assertEqual(status, 409)
+        # 4. Si además ejecuta la tarea, el orquestador no repite el efecto.
+        status, r = http_json("POST", service_url("orchestrator", "/interno/tareas/ejecutar"),
+                              {"id_tarea": tarea_id, "intento": 1, "payload": {}, "worker": "fantasma"})
+        self.assertEqual((status, r.get("duplicada")), (200, True))
+        eventos = get("/v1/auditoria?limit=100", token="demo-auditor-token")[1]["eventos"]
+        self.assertEqual(sum(1 for e in eventos if e["tipo"] == "tarea_completada" and e["entidad"] == tarea_id), 1)
+        print("\n[tolerancia] lease vencido: la tarea se reentregó, se completó una sola vez y el ack tardío fue rechazado (409)")
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 """Capa de borde: autenticación JWT (simulada), RBAC, validación y enrutamiento."""
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -10,12 +11,14 @@ from urllib.parse import unquote, urlparse
 from common import (
     JSONHandler,
     append_audit,
+    fijar_traza,
     http_json,
     load_config,
     log,
     new_id,
     service_url,
     serve,
+    traza_actual,
 )
 
 SERVICE_NAME = "api_gateway"
@@ -29,6 +32,22 @@ SERVICIOS_INTERNOS = ["orchestrator", "tool_service", "queue_service", "audit_se
 
 _SALUD: dict[str, bool] = {}
 _APAGADOS: set[str] = set()
+_REPLICAS: dict[str, dict] = {}
+
+
+def _replicas(nombre: str) -> list[str]:
+    """URL base de cada réplica de un servicio.
+
+    En Docker, el DNS interno devuelve una IP por contenedor cuando un servicio
+    tiene varias réplicas (p. ej. worker con replicas: 3).
+    """
+    base = urlparse(service_url(nombre))
+    try:
+        ips = sorted({ai[4][0] for ai in socket.getaddrinfo(base.hostname, base.port,
+                                                             socket.AF_INET, socket.SOCK_STREAM)})
+    except OSError:
+        ips = []
+    return [f"http://{ip}:{base.port}" for ip in ips] or [service_url(nombre)]
 _SALUD_LOCK = threading.Lock()
 
 
@@ -39,11 +58,15 @@ def _vigilar(nombre: str) -> None:
     fallar (la resolución DNS de un contenedor detenido no respeta el timeout HTTP).
     """
     while True:
-        status, cuerpo = http_json("GET", service_url(nombre, "/health"), timeout=0.8)
+        bases = _replicas(nombre)
+        respuestas = [http_json("GET", b + "/health", timeout=0.8) for b in bases]
+        activas = sum(1 for st, _ in respuestas if st == 200)
+        # Distingue "apagado desde el panel" (se puede volver a encender) de "caído".
+        apagado = activas == 0 and any(st == 503 and c.get("apagado") for st, c in respuestas)
         with _SALUD_LOCK:
-            _SALUD[nombre] = status == 200
-            # Distingue "apagado desde el panel" (se puede volver a encender) de "caído".
-            (_APAGADOS.add if status == 503 and cuerpo.get("apagado") else _APAGADOS.discard)(nombre)
+            _SALUD[nombre] = activas > 0
+            _REPLICAS[nombre] = {"total": len(bases), "activas": activas}
+            (_APAGADOS.add if apagado else _APAGADOS.discard)(nombre)
         time.sleep(1.0)
 
 
@@ -114,7 +137,8 @@ class Handler(JSONHandler):
             servicios = _salud_global()
             with _SALUD_LOCK:
                 apagados = sorted(_APAGADOS)
-            self.send_json(200, {"servicios": servicios, "apagados": apagados})
+                replicas = dict(_REPLICAS)
+            self.send_json(200, {"servicios": servicios, "apagados": apagados, "replicas": replicas})
         elif ruta == "/v1/metricas":
             # Métricas de operación para el panel: cola, DLQ y circuit breaker.
             claims = _autorizar(self, {"ADMINISTRADOR", "AUDITOR"})
@@ -126,6 +150,14 @@ class Handler(JSONHandler):
                 "cola": cola if s_cola == 200 else None,
                 "orquestador": orq if s_orq == 200 else None,
             })
+        elif ruta.startswith("/v1/trazas/"):
+            # Traza distribuida: spans de cada servicio por el que pasó la operación.
+            claims = _autorizar(self, {"ADMINISTRADOR", "AUDITOR"})
+            if not claims:
+                return
+            traza = unquote(ruta.split("/")[-1])
+            status, respuesta = _reenviar("GET", "audit_service", f"/trazas/{traza}", {}, {})
+            self.send_json(status, respuesta)
         elif ruta.startswith("/v1/tareas/"):
             claims = _autorizar(self, {"USUARIO_FINAL", "SISTEMA_EXTERNO", "ADMINISTRADOR", "AUDITOR"})
             if not claims:
@@ -147,6 +179,9 @@ class Handler(JSONHandler):
     def do_POST(self) -> None:
         ruta = urlparse(self.path).path
         cuerpo = self.body_json()
+        # Cada operación que entra por el borde abre una traza (o continúa la del cliente).
+        if not traza_actual():
+            fijar_traza(new_id("trz-"))
 
         if ruta == "/v1/chat":
             claims = _autorizar(self, {"USUARIO_FINAL", "ADMINISTRADOR"})
@@ -196,7 +231,14 @@ class Handler(JSONHandler):
                 self.send_json(404, {"error": "Servicio desconocido o no apagable"})
                 return
             encendido = bool(cuerpo.get("encendido", True))
-            status, respuesta = _reenviar("POST", nombre, "/interno/energia", {"encendido": encendido}, {})
+            # Se aplica a todas las réplicas del servicio (p. ej. los tres workers).
+            resultados = [http_json("POST", b + "/interno/energia", {"encendido": encendido}, timeout=3)
+                          for b in _replicas(nombre)]
+            fallidos = [r for r in resultados if r[0] != 200]
+            if fallidos:
+                status, respuesta = (503, {"error": "Réplica no disponible"}) if fallidos[0][0] == 0 else fallidos[0]
+            else:
+                status, respuesta = 200, {"encendido": encendido, "replicas": len(resultados)}
             if status == 200:
                 with _SALUD_LOCK:     # refleja el cambio sin esperar al siguiente sondeo
                     _SALUD[nombre] = encendido

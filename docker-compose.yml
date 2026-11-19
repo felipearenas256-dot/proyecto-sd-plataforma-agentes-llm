@@ -1,4 +1,5 @@
-# Despliegue del prototipo como seis contenedores en una red privada.
+# Despliegue del prototipo: seis servicios (ocho contenedores, el worker con tres
+# réplicas) en una red privada.
 # Solo el API Gateway (8080) se publica hacia el equipo anfitrión; el resto
 # de servicios solo es alcanzable dentro de la red "plataforma".
 x-servicio: &servicio
@@ -57,6 +58,11 @@ services:
     <<: *servicio
     command: ["python", "src/worker.py"]
     environment: { <<: *entorno, PUERTO: "8085", WORKER_POLL: "1" }
+    # Escalado horizontal: tres réplicas compiten por la misma cola. El DNS interno
+    # de Docker devuelve una IP por réplica. Se puede cambiar en caliente con
+    # docker compose up -d --scale worker=N
+    deploy:
+      replicas: 3
     depends_on:
       orchestrator: { condition: service_healthy }
 

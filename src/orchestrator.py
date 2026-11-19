@@ -21,6 +21,7 @@ from common import (
     read_json,
     service_url,
     serve,
+    traza_actual,
     write_json,
 )
 from llm import generar_respuesta
@@ -144,7 +145,10 @@ class Handler(JSONHandler):
             aprobacion_id = path.split("/")[2]
             self._decidir(aprobacion_id, body)
         elif path == "/interno/tareas/ejecutar":
-            self._ejecutar_tarea(body)
+            # Un candado por tarea: si la cola reentrega una tarea mientras otra réplica
+            # todavía la procesa, las dos ejecuciones se serializan.
+            with _candado_clave("tarea-" + str(body.get("id_tarea"))):
+                self._ejecutar_tarea(body)
         elif path == "/interno/tareas/fallido":
             self._tarea_fallida(body)
         elif path == "/interno/circuit/reset":
@@ -199,6 +203,7 @@ class Handler(JSONHandler):
                 "id_tarea": tarea_id,
                 "accion": criticas[0],
                 "mensaje": "La acción requiere aprobación humana antes de ejecutarse.",
+                "traza": traza_actual(),
             }
             status = 202
         else:
@@ -229,6 +234,7 @@ class Handler(JSONHandler):
                 "respuesta": _STATE["conversaciones"][conv_id]["mensajes"][1]["contenido"],
                 "proveedor_llm": proveedor,
                 "documentos": documentos,
+                "traza": traza_actual(),
             }
             status = 200
 
@@ -252,6 +258,7 @@ class Handler(JSONHandler):
             "evento": body.get("evento", "webhook"),
             "payload": body.get("payload", {}),
             "intentos": 0,
+            "traza": traza_actual(),
         }
         with _LOCK:
             _STATE["tareas"][tarea_id] = tarea
@@ -260,10 +267,11 @@ class Handler(JSONHandler):
             "id": tarea_id,
             "intento": 0,
             "payload": tarea["payload"],
+            "traza": traza_actual(),
         }})
         append_audit("tarea_creada", body.get("actor", "sistema_externo"), tarea_id,
                      "EN_COLA" if status == 202 else "ERROR_COLA")
-        respuesta = {"id_tarea": tarea_id, "estado": tarea["estado"]}
+        respuesta = {"id_tarea": tarea_id, "estado": tarea["estado"], "traza": traza_actual()}
         with _LOCK:
             if clave:
                 _STATE["idempotencia"][clave] = respuesta
@@ -273,13 +281,23 @@ class Handler(JSONHandler):
     def _ejecutar_tarea(self, body: dict) -> None:
         tarea_id = body.get("id_tarea")
         intento = int(body.get("intento", 1))
+        worker = str(body.get("worker", "worker"))
         with _LOCK:
             tarea = _STATE["tareas"].get(tarea_id)
             if not tarea:
                 self.send_json(404, {"error": "Tarea no encontrada"})
                 return
+            if tarea["estado"] == "COMPLETADA":
+                # Entrega duplicada (al menos una vez): se responde el resultado ya
+                # obtenido sin volver a ejecutar la herramienta.
+                tarea["entregas_duplicadas"] = tarea.get("entregas_duplicadas", 0) + 1
+                _persist()
+                self.send_json(200, {"estado": "COMPLETADA", "resultado": tarea.get("resultado"),
+                                     "duplicada": True})
+                return
             tarea["estado"] = "EN_PROCESO"
             tarea["intentos"] = intento
+            tarea["procesada_por"] = worker
             _persist()
         parametros = dict(body.get("payload", {}))
         parametros["id_tarea"] = tarea_id
@@ -287,7 +305,7 @@ class Handler(JSONHandler):
             "generar_reporte", parametros, tarea_id, int(parametros.get("fallar_veces", 0))
         )
         if status != 200:
-            append_audit("tarea_reintentable", "worker", tarea_id, f"FALLO_{intento}")
+            append_audit("tarea_reintentable", worker, tarea_id, f"FALLO_{intento}")
             with _LOCK:
                 tarea["estado"] = "REINTENTO_PENDIENTE"
                 _persist()
@@ -297,7 +315,7 @@ class Handler(JSONHandler):
             tarea["estado"] = "COMPLETADA"
             tarea["resultado"] = herramienta.get("resultado")
             _persist()
-        append_audit("tarea_completada", "worker", tarea_id, "OK", {"intento": intento})
+        append_audit("tarea_completada", worker, tarea_id, "OK", {"intento": intento})
         log(SERVICE_NAME, f"tarea {tarea_id} completada en intento {intento}")
         self.send_json(200, {"estado": "COMPLETADA", "resultado": herramienta.get("resultado")})
 
@@ -308,7 +326,7 @@ class Handler(JSONHandler):
             if tarea:
                 tarea["estado"] = "FALLIDA"
                 _persist()
-        append_audit("tarea_en_dlq", "worker", tarea_id, "AGOTADOS_REINTENTOS")
+        append_audit("tarea_en_dlq", str(body.get("worker", "worker")), tarea_id, "AGOTADOS_REINTENTOS")
         self.send_json(200, {"estado": "FALLIDA"})
 
     def _decidir(self, aprobacion_id: str, body: dict) -> None:

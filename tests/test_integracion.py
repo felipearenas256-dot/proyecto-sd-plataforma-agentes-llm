@@ -1,6 +1,7 @@
 """Pruebas de integración: comunicación entre gateway, orquestador, cola, worker y herramientas."""
 from __future__ import annotations
 
+import time
 import unittest
 
 from base import ensure_services, get, post, reset_state
@@ -58,6 +59,28 @@ class PruebasIntegracion(unittest.TestCase):
         completadas = [e for e in auditoria["eventos"] if e["tipo"] == "tarea_completada"]
         self.assertEqual(len(completadas), 3)
 
+
+    def test_05_traza_distribuida_extremo_a_extremo(self):
+        """Un mismo X-Trace-Id une la solicitud síncrona y el procesamiento asíncrono."""
+        status, creada = post("/v1/tareas", {"evento": "traza", "payload": {"registros": 2}},
+                              token="demo-sistema-token", key="int-traza")
+        self.assertEqual(status, 202)
+        traza = creada["traza"]
+        self.assertTrue(traza.startswith("trz-"))
+        http_json("POST", service_url("worker", "/worker/run-once"))
+        time.sleep(0.4)  # los spans se vuelcan a disco por lotes cada 100 ms
+        status, t = get(f"/v1/trazas/{traza}", token="demo-auditor-token")
+        self.assertEqual(status, 200)
+        servicios = {s["servicio"] for s in t["spans"]}
+        for esperado in ["api_gateway", "orchestrator", "queue_service", "tool_service"]:
+            self.assertIn(esperado, servicios)
+        self.assertTrue(any(s["servicio"].startswith("worker") for s in t["spans"]), servicios)
+        tipos = [e["tipo"] for e in t["eventos"]]
+        self.assertIn("tarea_creada", tipos)
+        self.assertIn("tarea_completada", tipos)
+        # El usuario final no puede consultar trazas.
+        self.assertEqual(get(f"/v1/trazas/{traza}")[0], 403)
+        print(f"\n[integracion] traza {traza}: {len(t['spans'])} spans en {len(servicios)} servicios")
 
 if __name__ == "__main__":
     unittest.main()

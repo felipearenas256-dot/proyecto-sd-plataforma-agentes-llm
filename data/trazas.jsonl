@@ -1,0 +1,6 @@
+{"traza": "trz-4d2c47878a88", "servicio": "queue_service", "operacion": "POST /queue", "inicio": 1795047681.6947, "ms": 0.6, "estado": 202}
+{"traza": "trz-b13f23eafa66", "servicio": "api_gateway", "operacion": "POST /v1/chat", "inicio": 1795047681.5946, "ms": 36.7, "estado": 200}
+{"traza": "trz-4d2c47878a88", "servicio": "api_gateway", "operacion": "POST /v1/tareas", "inicio": 1795047681.6889, "ms": 12.4, "estado": 202}
+{"traza": "trz-b13f23eafa66", "servicio": "orchestrator", "operacion": "POST /conversaciones/mensaje", "inicio": 1795047681.5976, "ms": 32.2, "estado": 200}
+{"traza": "trz-4d2c47878a88", "servicio": "orchestrator", "operacion": "POST /tareas", "inicio": 1795047681.6917, "ms": 7.7, "estado": 202}
+{"traza": "trz-4d2c47878a88", "servicio": "queue_service", "operacion": "POST /queue/ack", "inicio": 1795047682.7968, "ms": 0.6, "estado": 200}

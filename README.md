@@ -2,9 +2,11 @@
 
 Proyecto final de **Sistemas Distribuidos**. Integrantes: Luis Felipe Arenas Bernal · Juan Pablo Vargas Castañeda.
 
-Arquitectura de referencia sobre AWS (Amazon Bedrock AgentCore) y un **prototipo funcional de seis servicios** que se comunican por HTTP/JSON y una cola con DLQ. El prototipo se despliega como seis contenedores Docker e implementa:
+Arquitectura de referencia sobre AWS (Amazon Bedrock AgentCore) y un **prototipo funcional de seis servicios** que se comunican por HTTP/JSON y una cola con DLQ. El prototipo se despliega en Docker como ocho contenedores (el worker con tres réplicas) e implementa:
 
 - reintentos con backoff, circuit breaker, timeouts escalonados e idempotencia segura ante concurrencia;
+- escalado horizontal del worker con entrega por lease y confirmación (si una réplica muere, otra retoma su tarea);
+- trazas distribuidas: un `X-Trace-Id` recorre todos los servicios y el panel muestra la cascada de cada operación;
 - control de acceso por roles (401/403), límite de tasa (429), enmascaramiento de PII y auditoría;
 - un agente con búsqueda RAG y un LLM que funciona simulado por defecto o con Claude real (API de Anthropic o Amazon Bedrock).
 
@@ -16,14 +18,15 @@ Arquitectura de referencia sobre AWS (Amazon Bedrock AgentCore) y un **prototipo
 # Opción A: Docker (recomendada)
 docker compose up -d --build --wait
 # Interfaz: http://127.0.0.1:8080/
-python scripts/demo_docker.py          # demo con caída y recuperación de un nodo
+python scripts/demo_docker.py          # caída y recuperación de un nodo, réplicas y traza
+docker compose up -d --scale worker=5  # cambiar el número de réplicas en caliente
 docker compose down
 
 # Opción B: procesos locales (Python 3.12+, sin dependencias)
 python scripts/run_all.py
 
 # Pruebas (con Docker y run_all detenidos)
-python -m unittest discover -s tests -v   # 26 pruebas, ~33 s
+python -m unittest discover -s tests -v   # 29 pruebas, ~38 s
 ```
 
 Instrucciones completas en [MANUAL_INSTALACION.md](MANUAL_INSTALACION.md).
@@ -46,7 +49,7 @@ Instrucciones completas en [MANUAL_INSTALACION.md](MANUAL_INSTALACION.md).
 | Prueba | Resultado |
 |---|---|
 | Suite automatizada | 25/25 correctas (funcionales, integración, concurrencia, rendimiento, tolerancia a fallos) |
-| Rendimiento (250 solicitudes, 25 concurrentes) | 236,8 req/s · p95 = 134 ms (requisito ≤ 500 ms) |
+| Rendimiento (250 solicitudes, 25 concurrentes) | p95 entre 81 y 320 ms según la carga del equipo (requisito ≤ 500 ms) |
 | 20 reintentos simultáneos con la misma clave | 1 tarea y 1 conversación (antes de la corrección: 7 y 16) |
 | Caída real de `tool_service` | Los otros 5 servicios siguen operando; la tarea va a la DLQ y se recupera al reiniciar |
 
@@ -63,5 +66,5 @@ Instrucciones completas en [MANUAL_INSTALACION.md](MANUAL_INSTALACION.md).
 ├── evidencias/                    Resultados de pruebas, métricas y demo Docker
 ├── scripts/                       Arranque, demo Docker y generación de artefactos
 ├── src/                           Seis servicios + adaptador LLM + interfaz web
-└── tests/                         26 pruebas automatizadas
+└── tests/                         29 pruebas automatizadas
 ```

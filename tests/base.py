@@ -47,6 +47,15 @@ def iniciar_servicio(nombre: str) -> None:
     )
 
 
+def lanzar_replica_worker(worker_id: str, puerto: int) -> subprocess.Popen:
+    """Lanza una réplica adicional del worker (con sondeo activo) en otro puerto."""
+    entorno = os.environ.copy()
+    entorno.update({"WORKER_POLL": "1", "WORKER_ID": worker_id, "PUERTO": str(puerto),
+                    "LLM_PROVIDER": "simulado", "PYTHONPATH": str(ROOT / "src")})
+    return subprocess.Popen([sys.executable, str(ROOT / "src" / "worker.py")], cwd=ROOT, env=entorno,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def servicios_propios() -> bool:
     """True si las pruebas lanzaron los procesos (y por tanto pueden detenerlos)."""
     return set(_PROCESOS) == set(SERVICIOS)

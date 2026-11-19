@@ -3,7 +3,7 @@
 **Proyecto:** Arquitectura distribuida para una plataforma genérica de agentes LLM
 **Asignatura:** Sistemas Distribuidos
 
-Este manual explica cómo poner en marcha el prototipo de dos formas: con Docker (recomendada, seis contenedores) o como seis procesos locales de Python. También explica cómo ejecutar las pruebas y regenerar los artefactos.
+Este manual explica cómo poner en marcha el prototipo de dos formas: con Docker (recomendada, ocho contenedores: seis servicios y el worker con tres réplicas) o como seis procesos locales de Python. También explica cómo ejecutar las pruebas y regenerar los artefactos.
 
 ---
 
@@ -35,11 +35,14 @@ docker compose up -d --build --wait
 docker compose ps
 ```
 
-El primer comando construye la imagen `plataforma-agentes-llm:1.0` y levanta los seis contenedores en orden: primero la cola, las herramientas y la auditoría; luego el orquestador; y al final el worker y el gateway. `--wait` espera a que todos estén *healthy*. `docker compose ps` debe mostrar los seis servicios como `(healthy)`.
+El primer comando construye la imagen `plataforma-agentes-llm:1.0` y levanta los ocho contenedores en orden: primero la cola, las herramientas y la auditoría; luego el orquestador; y al final las tres réplicas del worker y el gateway. `--wait` espera a que todos estén *healthy*. `docker compose ps` debe mostrar los ocho contenedores como `(healthy)`.
 
 - **Interfaz web:** http://127.0.0.1:8080/
 - **Demostración guiada con caída y recuperación de un nodo:** `python scripts/demo_docker.py` (guarda el resultado en `evidencias/docker_demo.txt`)
-- **Registros de un servicio:** `docker compose logs -f worker`
+- **Registros de un servicio:** `docker compose logs -f worker` (muestra las tres réplicas)
+- **Cambiar el número de réplicas del worker:** `docker compose up -d --scale worker=5`. El panel (vista *Tareas*) muestra cuántas tareas confirmó cada réplica.
+- **Matar una réplica:** `docker kill <id>` con un id de `docker compose ps -q worker`; las demás siguen consumiendo la cola.
+- **Ver la traza de una operación:** enlace «Ver traza» en el chat, en las tareas o en la bitácora, o `GET /v1/trazas/{id}` con el token de auditor.
 - **Simular la caída de un nodo:** en la vista *Servicios* del panel, desactive el interruptor de `tool_service` (o de cualquier servicio interno) y vuelva a activarlo. Para una caída real del contenedor: `docker compose stop tool_service` y luego `docker compose start tool_service`
 - **Detener todo:** `docker compose down` (añada `-v` para borrar también el volumen de datos)
 

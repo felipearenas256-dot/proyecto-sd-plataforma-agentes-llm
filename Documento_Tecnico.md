@@ -126,6 +126,8 @@ Un agente LLM combina un modelo de lenguaje con herramientas externas: el modelo
 | Microservicios | Seis servicios autónomos con contratos HTTP | Lambda, Fargate, AgentCore | `src/*.py`, un contenedor por servicio |
 | Comunicación entre procesos | REST síncrono + cola asíncrona con DLQ | API Gateway, SQS | `queue_service.py`, `worker.py` |
 | Concurrencia y sincronización | Hilos por solicitud, candados por clave, idempotencia | DynamoDB condicional | `_candado_clave()` en `orchestrator.py` |
+| Escalabilidad horizontal | Varias réplicas del worker compiten por la cola con entrega por lease y confirmación | SQS (visibility timeout) + ECS/Fargate con varias tareas | `deploy.replicas: 3`, `/queue/next` + `/queue/ack` |
+| Observabilidad distribuida | Identificador de traza propagado entre servicios y spans por servicio | X-Ray / OpenTelemetry | Cabecera `X-Trace-Id`, `GET /v1/trazas/{id}` |
 | Tolerancia a fallos | Timeouts, reintentos, DLQ, circuit breaker, salud | Step Functions, SQS DLQ | `worker.py`, `CircuitBreaker` |
 | Nube y contenedores | Imagen única, red privada, reinicio automático | Fargate, ECS | `Dockerfile`, `docker-compose.yml` |
 | Seguridad | Tokens con rol, 401/403/429, PII, auditoría | Cognito, WAF, KMS | `_autorizar()`, `mask_pii()` |
@@ -173,7 +175,7 @@ Un agente LLM combina un modelo de lenguaje con herramientas externas: el modelo
 | Comunicación | HTTP/1.1 con JSON; REST síncrono; cola FIFO con DLQ |
 | Contenedores | Docker 24+ y Docker Compose v2; imagen `python:3.12-slim` |
 | LLM (opcional) | SDK `anthropic` para Claude vía API de Anthropic o Amazon Bedrock |
-| Pruebas | `unittest` (26 casos: funcionales, integración, concurrencia, rendimiento y tolerancia) |
+| Pruebas | `unittest` (29 casos: funcionales, integración, concurrencia, rendimiento y tolerancia) |
 | Documentación | Mermaid (diagramas), `python-docx` (informe), Pillow (capturas de consola) |
 | Infraestructura objetivo | AWS multi-AZ: API Gateway, Cognito, SQS, Lambda, Fargate, Bedrock AgentCore, DynamoDB, Aurora, OpenSearch, S3, KMS, CloudWatch |
 | Hardware mínimo (prototipo) | 2 núcleos, 4 GB de RAM (8 GB con Docker), 1 GB libre en disco |
@@ -195,7 +197,7 @@ La arquitectura de referencia se organiza en seis capas:
 
 ### 8.2 Arquitectura del prototipo implementado
 
-El prototipo materializa la arquitectura con seis servicios. Cada uno es un proceso independiente con su propio puerto y, en el despliegue con Docker, un contenedor propio dentro de la red privada `plataforma`. Solo el API Gateway publica un puerto hacia el exterior (8080). Los demás servicios solo son alcanzables desde la red interna.
+El prototipo materializa la arquitectura con seis servicios. Cada uno es un proceso independiente con su propio puerto y, en el despliegue con Docker, un contenedor propio dentro de la red privada `plataforma`. El `worker` se despliega con tres réplicas (ocho contenedores en total) que compiten por la misma cola; el número de réplicas se cambia en caliente con `docker compose up -d --scale worker=N`. Solo el API Gateway publica un puerto hacia el exterior (8080). Los demás servicios solo son alcanzables desde la red interna.
 
 ![Figura 2. Arquitectura del prototipo: seis servicios en contenedores y sus mecanismos de comunicación.](docs/prototipo.png)
 
@@ -206,14 +208,14 @@ El prototipo materializa la arquitectura con seis servicios. Cada uno es un proc
 | `tool_service` | 8082 | AgentCore Gateway + Lambda + Knowledge Bases | Catálogo de herramientas y búsqueda RAG |
 | `queue_service` | 8083 | Amazon SQS + DLQ | Cola FIFO y cola de mensajes fallidos |
 | `audit_service` | 8084 | CloudWatch Logs / S3 | Consulta de solo lectura de la bitácora |
-| `worker` | 8085 | Workers Fargate / Lambda consumidora | Consumo de la cola, reintentos y envío a DLQ |
+| `worker` (×3 réplicas) | 8085 | Workers Fargate / Lambda consumidora | Consumo de la cola con lease y confirmación, reintentos y envío a DLQ |
 | volumen `datos` | — | DynamoDB / Aurora / S3 | Estado, bitácora y base de conocimiento |
 
 ### 8.3 Principios de diseño aplicados
 
 - **Desacoplamiento por colas (RNF-01):** las tareas se publican en la cola y el worker las consume sin que el productor espere su ejecución.
 - **Estado externalizado (RNF-03):** el orquestador persiste su estado en el volumen compartido y lo recupera al reiniciar.
-- **Escalabilidad independiente (RNF-02):** cada servicio es una unidad de despliegue separada.
+- **Escalabilidad independiente (RNF-02):** cada servicio es una unidad de despliegue separada, y el consumidor de la cola escala horizontalmente: tres réplicas del worker se reparten las tareas sin coordinarse entre sí, porque la cola entrega cada tarea a una sola réplica.
 - **Resiliencia por defecto (RNF-04):** timeouts escalonados, reintentos, DLQ y circuit breaker en las comunicaciones críticas.
 - **Seguridad desde el diseño (RNF-06, RNF-10):** autenticación en el borde, mínimo privilegio, usuario no root en los contenedores y enmascaramiento de PII antes de persistir.
 - **Mínima superficie expuesta:** un solo puerto publicado; los servicios internos no son accesibles desde fuera de la red Docker.
@@ -223,8 +225,9 @@ El prototipo materializa la arquitectura con seis servicios. Cada uno es un proc
 | Mecanismo | Uso en la arquitectura | Implementación en el prototipo |
 |---|---|---|
 | REST/HTTP síncrono | Chat, consulta de tareas, aprobaciones, auditoría | Gateway → orquestador → herramientas (`http_json`) |
-| Cola de mensajes | Tareas asíncronas, reintentos, DLQ | `queue_service` (`/queue`, `/queue/next`, `/queue/dlt`) |
-| Sondeo (polling) | El consumidor extrae trabajo a su ritmo | `worker` consulta `/queue/next` cada 200 ms |
+| Cola de mensajes | Tareas asíncronas, reintentos, DLQ | `queue_service` (`/queue`, `/queue/next` con lease, `/queue/ack`, `/queue/dlt`) |
+| Sondeo (polling) | Los consumidores extraen trabajo a su ritmo | Cada réplica del `worker` consulta `/queue/next` cada 200 ms |
+| Propagación de contexto | Correlacionar una operación entre servicios | Cabecera `X-Trace-Id`, que viaja también dentro de la tarea encolada |
 | Eventos | Webhooks y tareas programadas | Campo `evento` en `POST /v1/tareas` |
 | HTTPS externo | Llamada al modelo de lenguaje | `llm.py` (Claude vía API o Bedrock, opcional) |
 | Almacenamiento compartido | Estado y bitácora | Volumen Docker `datos` |
@@ -249,7 +252,7 @@ El prototipo materializa la arquitectura con seis servicios. Cada uno es un proc
 
 ### 9.2 API implementada en el prototipo
 
-Todas las rutas `/v1/*`, salvo `/v1/salud`, exigen `Authorization: Bearer <token>`. Las operaciones de creación aceptan `Idempotency-Key`, y toda respuesta incluye `X-Request-Id`.
+Todas las rutas `/v1/*`, salvo `/v1/salud`, exigen `Authorization: Bearer <token>`. Las operaciones de creación aceptan `Idempotency-Key`, y toda respuesta incluye `X-Request-Id`. Cada operación de escritura abre una traza y su identificador vuelve en la cabecera `X-Trace-Id` y en el campo `traza` de la respuesta.
 
 | Método | Ruta | Propósito | Roles permitidos | Respuestas |
 |---|---|---|---|---|
@@ -263,8 +266,9 @@ Todas las rutas `/v1/*`, salvo `/v1/salud`, exigen `Authorization: Bearer <token
 | POST | `/v1/aprobaciones/{id}/decidir` | Aprobar o rechazar una acción crítica | APROBADOR, ADMINISTRADOR | 200, 400, 404, 409 |
 | POST | `/v1/tareas/reintentar-dlq` | Reintroducir la tarea más antigua de la DLQ | ADMINISTRADOR | 202, 404 |
 | GET | `/v1/auditoria?limit=N` | Consultar la bitácora | AUDITOR | 200 |
+| GET | `/v1/trazas/{id}` | Spans de cada servicio y eventos de auditoría de una traza | ADMINISTRADOR, AUDITOR | 200, 401, 403, 404 |
 
-Rutas internas (solo dentro de la red): `orchestrator` expone `/conversaciones/mensaje`, `/tareas`, `/interno/tareas/ejecutar`, `/interno/tareas/fallido` e `/interno/estado`; `tool_service` expone `/tools/invocar`; `queue_service` expone `/queue`, `/queue/next`, `/queue/dlt` y `/stats`; y todos los servicios exponen `/health`.
+Rutas internas (solo dentro de la red): `orchestrator` expone `/conversaciones/mensaje`, `/tareas`, `/interno/tareas/ejecutar`, `/interno/tareas/fallido` e `/interno/estado`; `tool_service` expone `/tools/invocar`; `queue_service` expone `/queue`, `/queue/next`, `/queue/ack`, `/queue/dlt` y `/stats`; `audit_service` expone `/auditoria` y `/trazas/{id}`; y todos los servicios exponen `/health` e `/interno/energia`.
 
 ### 9.3 API de referencia para el despliegue en AWS
 
@@ -319,7 +323,7 @@ El prototipo está escrito en Python 3.12 y usa solo la biblioteca estándar (`h
 | `src/tool_service.py` | Catálogo de herramientas y búsqueda RAG |
 | `src/queue_service.py` · `src/worker.py` | Cola con DLQ y consumidor con reintentos |
 | `src/audit_service.py` | Consulta de la bitácora |
-| `tests/` | 26 pruebas automatizadas en cinco archivos |
+| `tests/` | 29 pruebas automatizadas en cinco archivos |
 | `Dockerfile` · `docker-compose.yml` | Imagen y orquestación de los seis contenedores |
 | `config/config.json` | Puertos, tokens de demostración, límites y políticas |
 | `docs/` | Diagramas Mermaid (`.mmd`) y sus imágenes, capturas de pantalla |
@@ -449,15 +453,55 @@ services:
     command: ["python", "src/orchestrator.py"]
     depends_on:
       tool_service: { condition: service_healthy }
+  worker:
+    <<: *servicio
+    command: ["python", "src/worker.py"]
+    deploy:
+      replicas: 3                 # escalado horizontal del consumidor
   api_gateway:
     <<: *servicio
     command: ["python", "src/api_gateway.py"]
     ports: ["8080:8080"]          # único puerto publicado
 ```
 
+**h) Entrega con lease y confirmación** (`src/queue_service.py`). La cola no borra la tarea al entregarla: la marca "en vuelo" a nombre de la réplica durante 30 s. Si la réplica no la confirma a tiempo (porque murió o se colgó), la tarea vuelve a la cola. Es el mismo mecanismo que el *visibility timeout* de SQS y da entrega "al menos una vez":
+
+```python
+with _LOCK:
+    _recuperar_vencidas()                      # leases vencidos vuelven al frente de la cola
+    tarea = _PENDIENTES.popleft()              # bajo el candado: nunca dos réplicas a la vez
+    recibo = new_id("rcb-")
+    _EN_VUELO[tarea["id"]] = {"task": tarea, "worker": nombre, "recibo": recibo,
+                              "vence": time.monotonic() + visibilidad}
+...
+# POST /queue/ack: solo el recibo vigente confirma; uno vencido recibe 409
+if not vuelo or vuelo["recibo"] != recibo:
+    self.send_json(409, {"error": "Recibo vencido o desconocido"})
+```
+
+Como una tarea puede entregarse dos veces, el orquestador hace idempotente su ejecución: si la tarea ya está `COMPLETADA`, responde el resultado guardado sin volver a invocar la herramienta, y un candado por tarea serializa dos ejecuciones simultáneas.
+
+**i) Trazas distribuidas** (`src/common.py`). El gateway asigna un `X-Trace-Id` a cada operación. Cada servicio lo guarda en un contexto por hilo, lo añade a sus llamadas salientes y registra un *span* con su duración. La tarea encolada lleva la traza consigo, así que el procesamiento asíncrono del worker queda unido a la solicitud que lo originó:
+
+```python
+def http_json(method, url, payload=None, headers=None, timeout=3.0):
+    ...
+    if traza_actual():
+        req_headers["X-Trace-Id"] = traza_actual()   # propagación del contexto
+
+def envuelto(self):                                  # envoltura de cada do_GET/do_POST
+    fijar_traza(self.headers.get("X-Trace-Id", ""))
+    inicio, t0 = time.time(), time.perf_counter()
+    try:
+        _atender(self, ruta)
+    finally:
+        registrar_span(self.server_name_svc, f"{self.command} {ruta}", inicio,
+                       (time.perf_counter() - t0) * 1000, self._estado)
+```
+
 ### 10.4 Evidencias de las funcionalidades
 
-La interfaz web (`http://127.0.0.1:8080/`) es una consola de operación con un menú lateral y seis vistas: **Resumen** (indicadores, topología en vivo y actividad reciente), **Agente** (conversación con citas de las fuentes), **Tareas** (eventos asíncronos con el detalle de cada intento), **Aprobaciones** (acciones críticas en espera), **Servicios** (salud de cada contenedor) y **Bitácora**. Los indicadores de cola, DLQ y circuit breaker se obtienen de `GET /v1/metricas`, y el estado de los servicios de `GET /v1/salud`. El gateway calcula ese estado con un hilo de vigilancia por servicio, de modo que responde al instante aunque un contenedor esté caído. En la vista Servicios, cada servicio interno tiene un interruptor de encendido: al apagarlo, el proceso sigue vivo pero responde 503 a todo, incluido `/health`, de modo que para el resto del sistema es indistinguible de una caída. Esto permite inyectar fallos desde la propia interfaz (por ejemplo, apagar `tool_service` abre el circuit breaker y apagar `worker` deja las tareas esperando en la cola) sin usar la terminal. Solo el rol administrador puede usarlo, cada cambio queda en la bitácora y el gateway no es apagable porque es la entrada al panel.
+La interfaz web (`http://127.0.0.1:8080/`) es una consola de operación con un menú lateral y seis vistas: **Resumen** (indicadores, topología en vivo y actividad reciente), **Agente** (conversación con citas de las fuentes), **Tareas** (eventos asíncronos con el detalle de cada intento), **Aprobaciones** (acciones críticas en espera), **Servicios** (salud de cada contenedor) y **Bitácora**. Los indicadores de cola, DLQ y circuit breaker se obtienen de `GET /v1/metricas`, y el estado de los servicios de `GET /v1/salud`. El gateway calcula ese estado con un hilo de vigilancia por servicio, de modo que responde al instante aunque un contenedor esté caído. En la vista Servicios, cada servicio interno tiene un interruptor de encendido: al apagarlo, el proceso sigue vivo pero responde 503 a todo, incluido `/health`, de modo que para el resto del sistema es indistinguible de una caída. Esto permite inyectar fallos desde la propia interfaz (por ejemplo, apagar `tool_service` abre el circuit breaker y apagar `worker` deja las tareas esperando en la cola) sin usar la terminal. Solo el rol administrador puede usarlo, cada cambio queda en la bitácora y el gateway no es apagable porque es la entrada al panel. En la vista Tareas, el panel «Réplicas del worker» muestra cuántas tareas confirmó cada réplica, cuántas están en vuelo y cuántas se reentregaron por lease vencido, y cada tarea indica qué réplica la procesó. El enlace «Ver traza», disponible en el chat, en las tareas y en la bitácora, abre una cascada con los spans de cada servicio.
 
 ![Figura 6. Vista de resumen de la consola: seis servicios operativos, circuit breaker cerrado, topología y actividad reciente.](docs/capturas/interfaz_flujo_completo.png)
 
@@ -467,11 +511,15 @@ La interfaz web (`http://127.0.0.1:8080/`) es una consola de operación con un m
 
 ![Figura 9. Vista de servicios con el worker apagado desde su interruptor: el estado pasa a «Apagado», el menú y la cabecera lo señalan y el evento queda en la bitácora.](docs/capturas/interfaz_interruptores.png)
 
+![Figura 10. Vista de tareas con tres réplicas del worker: cada tarea indica la réplica que la procesó y el panel muestra el reparto de la carga.](docs/capturas/interfaz_replicas.png)
+
+![Figura 11. Traza distribuida de una tarea con dos fallos transitorios: gateway, orquestador, cola, worker y herramienta comparten el mismo X-Trace-Id.](docs/capturas/interfaz_traza.png)
+
 ## 11. Tolerancia a fallos y recuperación
 
 ### 11.1 Riesgos considerados
 
-Los fallos contemplados son: indisponibilidad temporal o total de una herramienta, duplicidad de mensajes por reintentos de red, interrupción de un servicio, agotamiento de reintentos, indisponibilidad del proveedor del LLM y condiciones de carrera entre solicitudes concurrentes. Cada riesgo tiene un mecanismo asociado, y todos los mecanismos se verifican con pruebas automatizadas.
+Los fallos contemplados son: indisponibilidad temporal o total de una herramienta, duplicidad de mensajes por reintentos de red, interrupción de un servicio, caída de una réplica del worker a mitad de una tarea, agotamiento de reintentos, indisponibilidad del proveedor del LLM y condiciones de carrera entre solicitudes concurrentes. Cada riesgo tiene un mecanismo asociado, y todos los mecanismos se verifican con pruebas automatizadas.
 
 ### 11.2 Mecanismos implementados
 
@@ -485,6 +533,9 @@ Los fallos contemplados son: indisponibilidad temporal o total de una herramient
 | Degradación controlada | Si el LLM falla, se responde en modo extractivo | Modelo alternativo / respuesta en caché | `llm.py` → `simulado (fallback)` |
 | Verificación de salud | Cada servicio expone `/health` | Health checks de ECS / Route 53 | `healthcheck` de Compose y `/v1/salud` |
 | Reinicio automático | Un contenedor caído se vuelve a levantar | ECS service scheduler | `restart: unless-stopped` |
+| Réplicas del consumidor | Si una réplica del worker cae, las demás siguen consumiendo la cola | Servicio ECS con varias tareas | `deploy.replicas: 3`; demo Docker, paso 6 |
+| Lease y confirmación | Una tarea tomada por una réplica que muere vuelve a la cola al vencer el lease | Visibility timeout de SQS | Lease de 30 s, `/queue/ack`, ack tardío → 409 |
+| Ejecución idempotente | Una tarea reentregada no repite su efecto | Escrituras condicionales en DynamoDB | Tarea `COMPLETADA` → resultado guardado, sin invocar la herramienta |
 | Recuperación desde la DLQ | El administrador reprocesa tras corregir la causa | `POST /v1/tasks/{id}/retry` | `POST /v1/tareas/reintentar-dlq` |
 | Estado persistente | El estado sobrevive al reinicio del orquestador | DynamoDB / Aurora multi-AZ | `state.json` en el volumen `datos` |
 | Redundancia geográfica | Réplicas en varias zonas de disponibilidad | Multi-AZ, copias de seguridad | Solo en diseño |
@@ -493,7 +544,9 @@ Los fallos contemplados son: indisponibilidad temporal o total de una herramient
 
 Cuando la herramienta no responde, el orquestador agota su timeout de 1,5 s y devuelve un 503 controlado. El worker registra el evento `tarea_reintentable`, espera el backoff y vuelve a intentar. Tras tres fallos, el circuit breaker del orquestador pasa a ABIERTO y las llamadas siguientes se rechazan de inmediato, sin esperar el timeout. El worker marca la tarea como `FALLIDA`, la publica en la DLQ y registra `tarea_en_dlq`. Cuando el servicio se recupera, el administrador reintroduce la tarea. La primera llamada pasa con el breaker en SEMIABIERTO y, si tiene éxito, el breaker vuelve a CERRADO. Durante todo el episodio, el gateway, la cola, el worker y la auditoría siguen respondiendo: el fallo queda aislado.
 
-![Figura 10. Secuencia de fallo y recuperación de una tarea asíncrona.](docs/secuencia_fallo.png)
+Si lo que cae es una réplica del worker, el efecto es distinto. Las tareas pendientes las toman las réplicas vivas, y la que estaba en manos de la réplica caída queda "en vuelo" hasta que vence su lease; entonces vuelve a la cola y otra réplica la completa. Si la réplica caída revive e intenta confirmar con su recibo viejo, la cola responde 409, y si intenta ejecutarla de nuevo, el orquestador devuelve el resultado ya guardado sin repetir el efecto.
+
+![Figura 12. Secuencia de fallo y recuperación de una tarea asíncrona.](docs/secuencia_fallo.png)
 
 ## 12. Seguridad del sistema
 
@@ -527,18 +580,18 @@ El diseño observa los principios de finalidad, libertad, seguridad, y acceso y 
 | Tipo | Archivo | Casos | Objetivo | Criterio de aceptación |
 |---|---|---|---|---|
 | Funcionales | `test_funcionales.py` | 11 | Operaciones principales, control de acceso, validación, PII y aprobación | Respuestas y códigos HTTP esperados |
-| Integración | `test_integracion.py` | 4 | Comunicación gateway → orquestador → cola → worker → herramienta y RAG | Flujo extremo a extremo sin errores |
-| Concurrencia | `test_concurrencia.py` | 3 | Solicitudes simultáneas y duplicadas | 0 errores; identificadores únicos; 1 efecto por clave |
+| Integración | `test_integracion.py` | 5 | Comunicación gateway → orquestador → cola → worker → herramienta, RAG y traza distribuida | Flujo extremo a extremo sin errores; un mismo X-Trace-Id en todos los servicios |
+| Concurrencia | `test_concurrencia.py` | 4 | Solicitudes simultáneas y duplicadas; tres réplicas del worker sobre la misma cola | 0 errores; identificadores únicos; 1 efecto por clave; cada tarea ejecutada una sola vez |
 | Rendimiento | `test_rendimiento.py` | 1 | 250 solicitudes de chat con 25 clientes concurrentes | 0 errores y p95 ≤ 500 ms (RNF-09) |
-| Tolerancia a fallos | `test_tolerancia_fallos.py` | 7 | Reintentos, DLQ, recuperación, idempotencia, circuit breaker, caída real de un proceso y apagado/encendido desde el panel | Aislamiento y recuperación correctos |
+| Tolerancia a fallos | `test_tolerancia_fallos.py` | 8 | Reintentos, DLQ, recuperación, idempotencia, circuit breaker, caída real de un proceso, apagado/encendido desde el panel y lease vencido | Aislamiento y recuperación correctos |
 
-Además de las pruebas automatizadas, `scripts/demo_docker.py` repite el escenario de caída sobre el despliegue en contenedores: detiene el contenedor `tool_service` con `docker compose stop` y lo vuelve a iniciar.
+Además de las pruebas automatizadas, `scripts/demo_docker.py` repite el escenario de caída sobre el despliegue en contenedores: detiene el contenedor `tool_service` con `docker compose stop` y lo vuelve a iniciar. Además, reparte 15 tareas entre las tres réplicas del worker, mata una réplica con `docker kill` para comprobar que las otras dos absorben la carga, la restablece con `--scale worker=3` y muestra la traza de una tarea que cruza cinco servicios.
 
 ### 13.2 Resultados
 
-La ejecución de `python -m unittest discover -s tests -v` terminó con **26 pruebas correctas (OK) en 33 segundos**. La salida completa está en `evidencias/resultados_pruebas.txt`.
+La ejecución de `python -m unittest discover -s tests -v` terminó con **29 pruebas correctas (OK) en 38 segundos**. La salida completa está en `evidencias/resultados_pruebas.txt`.
 
-![Figura 11. Salida de la ejecución de las 26 pruebas automatizadas.](docs/capturas/pruebas_unittest.png)
+![Figura 13. Salida de la ejecución de las 29 pruebas automatizadas.](docs/capturas/pruebas_unittest.png)
 
 Los hallazgos más relevantes son:
 
@@ -547,7 +600,7 @@ Los hallazgos más relevantes son:
 - **Seguridad.** Se verificaron las respuestas 401, 403, 400 y 429, el rechazo (409) de una segunda decisión sobre la misma aprobación, y que ningún correo ni número telefónico aparece en claro en la bitácora.
 - **Contenedores.** En Docker, el flujo completo funcionó entre contenedores. Con `tool_service` detenido, el chat respondió 503, la cola siguió aceptando tareas (202), la tarea terminó en la DLQ y, al reiniciar el contenedor, se reprocesó hasta COMPLETADA (`evidencias/docker_demo.txt`).
 
-![Figura 12. Demostración sobre los seis contenedores, con caída y recuperación de un nodo.](docs/capturas/demo_docker.png)
+![Figura 14. Demostración sobre los seis contenedores, con caída y recuperación de un nodo.](docs/capturas/demo_docker.png)
 
 ### 13.3 Rendimiento: medición, diagnóstico y optimización
 
@@ -563,7 +616,7 @@ La primera medición incumplió el requisito RNF-09. El diagnóstico mostró que
 | Errores | 0 | 0 | 0 |
 | Cumple RNF-09 | No | **Sí** | — |
 
-El p99 se mantiene alto porque unas pocas solicitudes coinciden con el volcado del estado a disco o con la planificación de hilos del sistema operativo. Este fenómeno de "cola larga" es típico de los sistemas distribuidos (Dean & Barroso, 2013). La mejora tiene un costo: ante una caída abrupta del orquestador pueden perderse hasta 100 ms de cambios de estado, un compromiso aceptable para un prototipo que en producción se resolvería con escrituras transaccionales en DynamoDB. Los valores varían entre ejecuciones en un mismo equipo de escritorio: en cuatro corridas posteriores a la optimización, el p95 fue de 81 ms, 130 ms, 134 ms y 248 ms. Todas cumplen el requisito; la tabla reporta la corrida guardada en las evidencias. Las métricas exactas de cada corrida se guardan en `evidencias/rendimiento.json` y `evidencias/rendimiento_antes_optimizacion.json`.
+El p99 se mantiene alto porque unas pocas solicitudes coinciden con el volcado del estado a disco o con la planificación de hilos del sistema operativo. Este fenómeno de "cola larga" es típico de los sistemas distribuidos (Dean & Barroso, 2013). La mejora tiene un costo: ante una caída abrupta del orquestador pueden perderse hasta 100 ms de cambios de estado, un compromiso aceptable para un prototipo que en producción se resolvería con escrituras transaccionales en DynamoDB. Los valores varían entre ejecuciones en un mismo equipo de escritorio. En las corridas posteriores a la optimización, el p95 estuvo entre 81 ms y 320 ms; la corrida final de las evidencias, hecha con el equipo más cargado, dio 304 ms (`evidencias/rendimiento.json`). Todas cumplen el requisito. Para descartar que el aumento viniera de los cambios de escalado y trazas, se repitió la medición con la versión anterior del código en el mismo momento: dio 270 ms, de modo que la diferencia proviene de la carga del equipo y no del código. Por eso la tabla compara la corrida "antes" con la corrida "después" medida en condiciones similares (`evidencias/rendimiento_antes_optimizacion.json` y `evidencias/rendimiento_despues_optimizacion.json`).
 
 ### 13.4 Comparación con los requisitos
 
@@ -573,18 +626,18 @@ El p99 se mantiene alto porque unas pocas solicitudes coinciden con el volcado d
 | RF-02, RF-06 | Creación y consulta de tareas (funcionales 06; integración 02, 04) | Cumplido |
 | RF-03 | Invocación de herramientas desde orquestador y worker | Cumplido |
 | RF-04, RF-05 | Guardrails, aprobación y rechazo (funcionales 07, 10) | Cumplido |
-| RF-07 | Reintentos, DLQ y reproceso (tolerancia 01–03, 06) | Cumplido |
+| RF-07 | Reintentos, DLQ, reproceso y reentrega por lease (tolerancia 01–03, 06, 08) | Cumplido |
 | RF-09 | Bitácora consultable por el auditor (funcionales 08, 11) | Cumplido |
 | RF-10, RF-11 | Tokens con rol, 401/403/429 (funcionales 02, 03, 09) | Cumplido con tokens de demostración (sin OAuth real) |
 | RF-12 | Versionado de políticas | Diseñado; no implementado |
 | RNF-01, RNF-04 | La cola acepta tareas con la herramienta caída; fallo aislado (tolerancia 06, demo Docker) | Cumplido |
-| RNF-02 | Seis servicios desplegables por separado | Cumplido en estructura; escalado horizontal no probado |
+| RNF-02 | Seis servicios desplegables por separado; tres réplicas del worker reparten 30 tareas sin duplicados (concurrencia 04) y sobreviven a la caída de una réplica (demo Docker) | Cumplido para el consumidor; orquestador y cola en una sola instancia |
 | RNF-03 | Estado en volumen persistente | Cumplido |
 | RNF-05 | Reinicio automático y healthchecks | Cumplido en Docker; multi-AZ solo en diseño |
 | RNF-06 | Cifrado TLS/KMS | Diseñado; no aplica al prototipo local |
-| RNF-07 | Evento de auditoría por acción | Cumplido (sin trazas distribuidas tipo X-Ray) |
+| RNF-07 | Evento de auditoría por acción, con su `traza`; spans por servicio (integración 05) | Cumplido |
 | RNF-08 | Herramientas en servicio separado | Cumplido |
-| RNF-09 | p95 = 134 ms ≤ 500 ms | Cumplido tras optimización |
+| RNF-09 | p95 entre 81 y 320 ms en todas las corridas (final: 304 ms) ≤ 500 ms | Cumplido tras optimización |
 | RNF-10 | PII enmascarada (funcionales 11) | Cumplido en lo técnico |
 
 ## 14. Despliegue y ejecución
@@ -625,10 +678,11 @@ El p99 se mantiene alto porque unas pocas solicitudes coinciden con el volcado d
 ```bash
 git clone https://github.com/felipearenas256-dot/proyecto-sd-plataforma-agentes-llm.git
 cd proyecto-sd-plataforma-agentes-llm
-docker compose up -d --build --wait     # construye la imagen y levanta los 6 contenedores
+docker compose up -d --build --wait     # construye la imagen y levanta 8 contenedores (worker ×3)
 docker compose ps                        # todos deben aparecer como (healthy)
 # Interfaz: http://127.0.0.1:8080/
-python scripts/demo_docker.py            # recorrido con caída y recuperación de un nodo
+python scripts/demo_docker.py            # caída y recuperación de un nodo, réplicas y traza
+docker compose up -d --scale worker=5    # cambia el número de réplicas en caliente
 docker compose down -v                   # detiene y borra contenedores y volumen
 ```
 
@@ -658,7 +712,7 @@ python scripts/run_all.py --stop
 
 ### 15.1 Logros
 
-Se completó el ciclo exigido por la guía: levantamiento de 12 requisitos funcionales y 10 no funcionales verificables, arquitectura de referencia sobre AWS, siete diagramas (arquitectura de referencia, arquitectura del prototipo, casos de uso, clases, modelo de datos y dos de secuencia), y un prototipo de seis servicios que se ejecuta tanto en procesos locales como en contenedores. Además, 26 pruebas automatizadas cubren las cinco categorías recomendadas. El prototipo demuestra los conceptos centrales de la asignatura con evidencias reproducibles: comunicación síncrona y asíncrona, concurrencia con sincronización, tolerancia a fallos con aislamiento real de un nodo caído, seguridad en el borde y despliegue en contenedores.
+Se completó el ciclo exigido por la guía: levantamiento de 12 requisitos funcionales y 10 no funcionales verificables, arquitectura de referencia sobre AWS, siete diagramas (arquitectura de referencia, arquitectura del prototipo, casos de uso, clases, modelo de datos y dos de secuencia), y un prototipo de seis servicios que se ejecuta tanto en procesos locales como en contenedores. Además, 29 pruebas automatizadas cubren las cinco categorías recomendadas. El prototipo demuestra los conceptos centrales de la asignatura con evidencias reproducibles: comunicación síncrona y asíncrona, concurrencia con sincronización, tolerancia a fallos con aislamiento real de un nodo caído, escalado horizontal del consumidor con entrega por lease, trazabilidad distribuida, seguridad en el borde y despliegue en contenedores.
 
 ### 15.2 Dificultades encontradas
 
@@ -670,14 +724,16 @@ Las pruebas destaparon defectos reales de los sistemas distribuidos, que se corr
 4. **Timeouts mal escalonados en Docker.** Con un contenedor detenido, la resolución del nombre tardaba más que el timeout del gateway, y el error se reportaba en el borde y no en el orquestador. Se definieron timeouts decrecientes hacia el interior (30 s, 5 s y 1,5 s).
 5. **Búsqueda RAG poco efectiva.** La búsqueda inicial comparaba la pregunta completa como texto literal y casi nunca encontraba coincidencias. Se reemplazó por coincidencia de términos normalizados sin tildes y con raíces de seis letras.
 6. **Chequeo de salud lento con un nodo caído.** Con un contenedor detenido, la resolución DNS de su nombre tardaba de 3 a 4 segundos sin respetar el timeout HTTP, y el panel se congelaba. Se cambió a un hilo de vigilancia por servicio que guarda el último estado; `/v1/salud` pasó a responder en unos 3 ms.
+7. **Pérdida de tareas al escalar.** La primera cola entregaba y borraba la tarea en el mismo paso: si el worker moría a mitad del procesamiento, la tarea desaparecía. Con varias réplicas el riesgo crece, así que se pasó a entrega con lease y confirmación. Esa decisión trae entrega "al menos una vez", que obligó a hacer idempotente la ejecución en el orquestador; la prueba `test_08_lease_vencido_reentrega_sin_duplicar_efectos` cubre los dos lados.
 
 ### 15.3 Limitaciones
 
 - La autenticación usa tokens estáticos de demostración y no un proveedor OAuth real con JWT firmados.
 - La cola vive en la memoria del `queue_service`: si ese contenedor se reinicia, las tareas pendientes se pierden. SQS resolvería esta limitación en producción.
+- Solo el worker tiene réplicas. El orquestador y la cola corren en una instancia cada uno, de modo que su caída detiene esa función hasta que el contenedor se reinicia; replicarlos exigiría mover su estado a un almacén compartido (DynamoDB, SQS).
 - El circuit breaker y el límite de tasa son locales a cada proceso; con varias réplicas necesitarían un almacén compartido, como ElastiCache.
 - El estado compartido en un volumen Docker no escala a varios nodos físicos; en producción corresponde a DynamoDB o Aurora.
-- No se implementaron trazas distribuidas (X-Ray/OpenTelemetry), ni el streaming por WebSocket, ni el versionado de políticas (RF-12).
+- Las trazas distribuidas son una implementación propia sobre un archivo JSONL, sin muestreo ni el estándar W3C Trace Context; en producción se usaría X-Ray u OpenTelemetry. No se implementaron el streaming por WebSocket ni el versionado de políticas (RF-12).
 - Por defecto, el LLM funciona en modo simulado (respuesta extractiva). La integración con Claude está implementada, pero no se validó con credenciales reales durante las pruebas para mantenerlas reproducibles y sin costo.
 - No se desplegó en AWS, de modo que la disponibilidad multi-AZ y el rendimiento en la nube no están medidos.
 
@@ -777,8 +833,8 @@ Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., & Cao, Y. (2023)
 | B | `docs/arquitectura.png` · `docs/prototipo.png` (+ fuentes `.mmd`) | Diagramas de arquitectura de referencia y del prototipo |
 | C | `docs/casos_uso.png` · `docs/clases.png` · `docs/modelo_datos.png` · `docs/secuencia_*.png` | Diagramas UML, modelo de datos y secuencias |
 | D | `MANUAL_INSTALACION.md` | Manual de instalación y ejecución |
-| E | `evidencias/resultados_pruebas.txt` | Salida completa de las 26 pruebas |
-| F | `evidencias/rendimiento.json` · `evidencias/rendimiento_antes_optimizacion.json` | Métricas de rendimiento antes y después de la optimización |
+| E | `evidencias/resultados_pruebas.txt` | Salida completa de las 29 pruebas |
+| F | `evidencias/rendimiento_antes_optimizacion.json` · `evidencias/rendimiento_despues_optimizacion.json` · `evidencias/rendimiento.json` | Métricas antes y después de la optimización, y de la corrida final |
 | G | `evidencias/docker_demo.txt` · `docs/capturas/` | Demostración en contenedores y capturas de pantalla |
 | H | `Dockerfile` · `docker-compose.yml` · `config/config.json` | Archivos de configuración del despliegue |
 | I | `PRESUPUESTO.md` | Presupuesto detallado en dos escenarios |
@@ -786,7 +842,7 @@ Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., & Cao, Y. (2023)
 
 ### Anexo K. Modelo de datos propuesto para producción
 
-![Figura 13. Modelo entidad-relación propuesto para Aurora PostgreSQL.](docs/modelo_datos.png)
+![Figura 15. Modelo entidad-relación propuesto para Aurora PostgreSQL.](docs/modelo_datos.png)
 
 Extracto del DDL propuesto:
 

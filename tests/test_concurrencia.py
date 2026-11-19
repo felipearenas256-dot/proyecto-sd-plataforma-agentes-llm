@@ -5,7 +5,7 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from base import ensure_services, get, post, reset_state
+from base import ensure_services, get, lanzar_replica_worker, post, reset_state
 from common import http_json, service_url
 
 
@@ -64,6 +64,38 @@ class PruebasConcurrencia(unittest.TestCase):
         self.assertEqual(stats["pendientes"], 1)
         print("\n[concurrencia] 20 solicitudes con la misma clave -> 1 tarea y 1 conversación")
 
+
+    def test_04_tres_workers_compiten_sin_duplicar(self):
+        """Escalado horizontal: 3 réplicas del worker consumen 30 tareas de la misma cola."""
+        ids = []
+        for i in range(30):
+            _, r = http_json("POST", service_url("orchestrator", "/tareas"),
+                             {"evento": "escala", "payload": {"n": i}, "idempotency_key": f"esc-{i}"})
+            ids.append(r["id_tarea"])
+        replicas = [lanzar_replica_worker(f"replica-{n}", 8090 + n) for n in (1, 2, 3)]
+        try:
+            limite = time.time() + 40
+            while time.time() < limite:
+                _, cola = http_json("GET", service_url("queue_service", "/stats"))
+                if cola["confirmadas"] >= 30:
+                    break
+                time.sleep(0.3)
+        finally:
+            for proc in replicas:
+                proc.kill()
+                proc.wait(timeout=5)
+        estados = [get(f"/v1/tareas/{t}")[1]["estado"] for t in ids]
+        self.assertEqual(estados.count("COMPLETADA"), 30)
+        self.assertEqual((cola["confirmadas"], cola["pendientes"], cola["en_vuelo"]), (30, 0, 0))
+        # Cada tarea se ejecutó exactamente una vez...
+        eventos = get("/v1/auditoria?limit=500", token="demo-auditor-token")[1]["eventos"]
+        completadas = [e["entidad"] for e in eventos if e["tipo"] == "tarea_completada"]
+        self.assertEqual(sorted(completadas), sorted(ids))
+        # ...y el trabajo se repartió entre varias réplicas.
+        por_replica = {w["id"]: w["confirmadas"] for w in cola["workers"] if w["id"].startswith("replica-")}
+        self.assertEqual(sum(por_replica.values()), 30)
+        self.assertGreaterEqual(sum(1 for n in por_replica.values() if n > 0), 2, por_replica)
+        print(f"\n[concurrencia] 30 tareas, 3 workers: reparto {por_replica}, 0 duplicadas")
 
 if __name__ == "__main__":
     unittest.main()

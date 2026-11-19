@@ -1,11 +1,13 @@
 EVIDENCIAS DE PRUEBAS - Prototipo local de plataforma de agentes LLM
 Comando: python -m unittest discover -s tests -v
-Fecha: 18/11/2026 18:33 · Python 3.12.10 · Windows 11
+Fecha: 18/11/2026 19:21 · Python 3.12.10 · Windows 11
 
 test_01_40_chat_simultaneos (test_concurrencia.PruebasConcurrencia.test_01_40_chat_simultaneos) ... ok
 test_02_20_tareas_simultaneas (test_concurrencia.PruebasConcurrencia.test_02_20_tareas_simultaneas) ... ok
 test_03_misma_clave_idempotencia_concurrente (test_concurrencia.PruebasConcurrencia.test_03_misma_clave_idempotencia_concurrente)
 20 reintentos simultáneos con la misma Idempotency-Key producen un solo efecto. ... ok
+test_04_tres_workers_compiten_sin_duplicar (test_concurrencia.PruebasConcurrencia.test_04_tres_workers_compiten_sin_duplicar)
+Escalado horizontal: 3 réplicas del worker consumen 30 tareas de la misma cola. ... ok
 test_01_chat_conversacional (test_funcionales.PruebasFuncionales.test_01_chat_conversacional) ... ok
 test_02_sin_token_devuelve_401 (test_funcionales.PruebasFuncionales.test_02_sin_token_devuelve_401) ... ok
 test_03_rol_sin_permiso_devuelve_403 (test_funcionales.PruebasFuncionales.test_03_rol_sin_permiso_devuelve_403) ... ok
@@ -21,6 +23,8 @@ test_01_health_de_todos_los_servicios (test_integracion.PruebasIntegracion.test_
 test_02_flujo_asincrono_extremo_a_extremo (test_integracion.PruebasIntegracion.test_02_flujo_asincrono_extremo_a_extremo) ... ok
 test_03_recuperacion_aumentada_por_generacion (test_integracion.PruebasIntegracion.test_03_recuperacion_aumentada_por_generacion) ... ok
 test_04_cola_desacopla_productor_y_consumidor (test_integracion.PruebasIntegracion.test_04_cola_desacopla_productor_y_consumidor) ... ok
+test_05_traza_distribuida_extremo_a_extremo (test_integracion.PruebasIntegracion.test_05_traza_distribuida_extremo_a_extremo)
+Un mismo X-Trace-Id une la solicitud síncrona y el procesamiento asíncrono. ... ok
 test_01_latencia_y_throughput_del_chat (test_rendimiento.PruebasRendimiento.test_01_latencia_y_throughput_del_chat) ... ok
 test_01_reintentos_con_backoff (test_tolerancia_fallos.PruebasTolerancia.test_01_reintentos_con_backoff) ... ok
 test_02_agotar_reintentos_envia_a_dlq (test_tolerancia_fallos.PruebasTolerancia.test_02_agotar_reintentos_envia_a_dlq) ... ok
@@ -31,18 +35,26 @@ test_06_caida_real_de_un_servicio_y_recuperacion (test_tolerancia_fallos.Pruebas
 Se mata el proceso tool_service y se observa aislamiento, DLQ y recuperación. ... ok
 test_07_apagar_y_encender_servicio_desde_el_panel (test_tolerancia_fallos.PruebasTolerancia.test_07_apagar_y_encender_servicio_desde_el_panel)
 El interruptor del panel apaga un servicio (503) sin matar el proceso y lo vuelve a encender. ... ok
+test_08_lease_vencido_reentrega_sin_duplicar_efectos (test_tolerancia_fallos.PruebasTolerancia.test_08_lease_vencido_reentrega_sin_duplicar_efectos)
+Un worker toma una tarea y muere sin confirmarla: el lease vence y otro la completa. ... ok
 
 ----------------------------------------------------------------------
-Ran 26 tests in 32.577s
+Ran 29 tests in 38.358s
 
 OK
 
-[concurrencia] 40 solicitudes en 0.555s (72.1 req/s), 0 errores
+[concurrencia] 40 solicitudes en 0.197s (202.7 req/s), 0 errores
 
 [concurrencia] 20 solicitudes con la misma clave -> 1 tarea y 1 conversación
 
-[rendimiento] 250 solicitudes, concurrencia 25: 236.8 req/s, p50=82.2 ms, p95=133.8 ms, p99=601.8 ms, errores=0
+[concurrencia] 30 tareas, 3 workers: reparto {'replica-1': 10, 'replica-2': 10, 'replica-3': 10}, 0 duplicadas
+
+[integracion] traza trz-3dcb02b2a6f9: 7 spans en 5 servicios
+
+[rendimiento] 250 solicitudes, concurrencia 25: 107.6 req/s, p50=217.3 ms, p95=303.6 ms, p99=733.5 ms, errores=0
 
 [tolerancia] tarea completada tras 3 intentos (2 reintentos)
 
 [tolerancia] tool_service caído: chat 503, tarea en DLQ, breaker ABIERTO; tras reiniciarlo la tarea se completó y el breaker volvió a CERRADO
+
+[tolerancia] lease vencido: la tarea se reentregó, se completó una sola vez y el ack tardío fue rechazado (409)

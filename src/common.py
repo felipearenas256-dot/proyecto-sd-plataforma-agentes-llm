@@ -30,6 +30,79 @@ _AUDIT_LOCK = threading.Lock()
 # responde 503 a todo (incluido /health), igual que un servicio caído para sus clientes.
 APAGADO = threading.Event()
 
+# ---------------------------------------------------------------------------
+# Trazabilidad distribuida (equivalente local a AWS X-Ray / OpenTelemetry).
+# El gateway asigna un X-Trace-Id a cada operación; cada servicio lo guarda en un
+# contexto por hilo, lo propaga en sus llamadas salientes y registra un "span"
+# (servicio, operación, inicio, duración, estado) en data/trazas.jsonl.
+# ---------------------------------------------------------------------------
+_CTX = threading.local()
+_TRAZAS_LOCK = threading.Lock()
+
+
+def traza_actual() -> str:
+    return getattr(_CTX, "traza", "")
+
+
+def fijar_traza(traza: str) -> None:
+    _CTX.traza = traza or ""
+
+
+def registrar_span(servicio: str, operacion: str, inicio: float, duracion_ms: float,
+                   estado: int | str, detalle: dict | None = None) -> None:
+    traza = traza_actual()
+    if not traza:
+        return
+    span = {"traza": traza, "servicio": servicio, "operacion": operacion,
+            "inicio": round(inicio, 4), "ms": round(duracion_ms, 1), "estado": estado}
+    if detalle:
+        span["detalle"] = detalle
+    # Escritura diferida por lotes: la solicitud solo agrega el span a memoria y un
+    # hilo lo vuelca a disco cada 100 ms, para no sumar E/S a la latencia.
+    global _ESCRITOR_SPANS
+    with _TRAZAS_LOCK:
+        _SPANS_PENDIENTES.append(json.dumps(span, ensure_ascii=False))
+        if _ESCRITOR_SPANS is None:
+            _ESCRITOR_SPANS = threading.Thread(target=_volcar_spans, daemon=True)
+            _ESCRITOR_SPANS.start()
+
+
+_SPANS_PENDIENTES: list[str] = []
+_ESCRITOR_SPANS: threading.Thread | None = None
+
+
+def _volcar_spans() -> None:
+    while True:
+        time.sleep(0.1)
+        with _TRAZAS_LOCK:
+            lote = _SPANS_PENDIENTES[:]
+            _SPANS_PENDIENTES.clear()
+        if not lote:
+            continue
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            with (DATA_DIR / "trazas.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write("\n".join(lote) + "\n")
+        except OSError as exc:
+            log("trazas", f"no se pudieron guardar {len(lote)} spans: {exc}")
+
+
+def leer_traza(traza: str, max_lineas: int = 20000) -> list[dict]:
+    path = DATA_DIR / "trazas.jsonl"
+    if not path.exists():
+        return []
+    spans = []
+    for ln in path.read_text(encoding="utf-8").splitlines()[-max_lineas:]:
+        if traza not in ln:
+            continue
+        try:
+            span = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if span.get("traza") == traza:
+            spans.append(span)
+    return sorted(spans, key=lambda x: x["inicio"])
+
 
 def load_config() -> dict:
     global _CONFIG_CACHE
@@ -68,6 +141,8 @@ def http_json(
     """Cliente HTTP minimalista. Estado 0 significa fallo de comunicación."""
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
     req_headers = {"Content-Type": "application/json; charset=utf-8"}
+    if traza_actual():
+        req_headers["X-Trace-Id"] = traza_actual()   # propagación del contexto de traza
     req_headers.update(headers or {})
     req = urllib.request.Request(url, data=body, headers=req_headers, method=method)
     try:
@@ -118,6 +193,8 @@ def append_audit(
         "resultado": resultado,
         "detalle": detalle or {},
     }
+    if traza_actual():
+        event["traza"] = traza_actual()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     linea = json.dumps(event, ensure_ascii=False) + "\n"
     # Sin este candado, hilos concurrentes intercalaban líneas y corrompían la bitácora.
@@ -192,9 +269,21 @@ def _con_interruptor(metodo_original):
     from urllib.parse import urlparse
 
     def envuelto(self) -> None:
+        ruta = urlparse(self.path).path
+        fijar_traza(self.headers.get("X-Trace-Id", ""))
+        inicio, t0 = time.time(), time.perf_counter()
+        try:
+            _atender(self, ruta)
+        finally:
+            if ruta != "/health":
+                registrar_span(self.server_name_svc, f"{self.command} {ruta}", inicio,
+                               (time.perf_counter() - t0) * 1000, getattr(self, "_estado", 0))
+            fijar_traza("")
+
+    def _atender(self, ruta: str) -> None:
         if not getattr(self, "APAGABLE", True):   # el gateway público nunca se apaga
             metodo_original(self)
-        elif urlparse(self.path).path == "/interno/energia":
+        elif ruta == "/interno/energia":
             if self.command == "POST":
                 encendido = bool(self.body_json().get("encendido", True))
                 (APAGADO.clear if encendido else APAGADO.set)()
@@ -227,8 +316,11 @@ class JSONHandler(BaseHTTPRequestHandler):
 
     def send_json(self, status: int, payload: dict, headers: dict | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self._estado = status
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if traza_actual():
+            self.send_header("X-Trace-Id", traza_actual())
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Request-Id", new_id("req-"))
         for key, value in (headers or {}).items():
@@ -265,9 +357,11 @@ def serve(service_name: str, handler: type[BaseHTTPRequestHandler]) -> None:
     cfg = load_config()["services"][service_name]
     # BIND_HOST=0.0.0.0 permite que otros contenedores alcancen el servicio.
     host = os.environ.get("BIND_HOST", cfg["host"])
-    server = ThreadingHTTPServer((host, cfg["port"]), handler)
-    server.nombre_servicio = service_name
-    log(service_name, f"escuchando en http://{host}:{cfg['port']}")
+    # PUERTO permite lanzar varias réplicas de un mismo servicio en un solo equipo.
+    puerto = int(os.environ.get("PUERTO", cfg["port"]))
+    server = ThreadingHTTPServer((host, puerto), handler)
+    server.nombre_servicio = os.environ.get("NOMBRE_INSTANCIA", service_name)
+    log(service_name, f"escuchando en http://{host}:{puerto}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
